@@ -1,0 +1,20 @@
+*.local.md
+# Локальные кнопки заполнения настроек — в них реальные имена
+# параметров/семейств проекта, в репозитории им не место.
+SeedMySettings.pushbutton/
+SeedAllSettings.pushbutton/
+__pycache__/
+*.pyc
+
+# .NET build output for addins/*
+addins/*/bin/
+addins/*/obj/
+
+# Локальная сборка отдельного приложения — не в репозиторий
+/dist/
+
+# C# build output
+/csharp/**/bin/
+/csharp/**/obj/
+/csharp/**/*.zip
+/csharp/*.zip
