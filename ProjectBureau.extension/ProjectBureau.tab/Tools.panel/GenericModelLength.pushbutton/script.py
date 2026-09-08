@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
-__title__ = "Длина\nлиний"
-__doc__ = "Сумма длин выбранных обобщённых моделей по типам"
+__title__ = u"Длина\nлиний"
+__doc__ = u"Сумма длин выбранных обобщённых моделей по типам"
 __author__ = "Pipers"
 
 from pyrevit import revit, DB, script as pyrevit_script
