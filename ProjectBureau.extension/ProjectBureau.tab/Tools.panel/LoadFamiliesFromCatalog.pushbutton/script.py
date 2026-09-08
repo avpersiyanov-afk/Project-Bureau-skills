@@ -74,16 +74,9 @@ try:
         load_entries, overwrite_params = picked
 
         app = doc.Application
-        type_map = []      # (entry, [имена типоразмеров])
-        passthru = []      # семейства, у которых типы не прочитались — грузим целиком
-        with forms.ProgressBar(title=u"Чтение типоразмеров… ({value}/{max_value})") as pb:
-            for i, e in enumerate(load_entries):
-                names = fc.read_family_type_names(app, e.path)
-                if names:
-                    type_map.append((e, names))
-                else:
-                    passthru.append(e)
-                pb.update_progress(i + 1, len(load_entries))
+        # type_map: (entry, [имена типоразмеров]); passthru: семейства,
+        # у которых типы не прочитались — грузим целиком.
+        type_map, passthru = fc.read_family_types_batch(app, load_entries)
 
         sel = fc.show_type_picker(type_map)
         if sel is None:

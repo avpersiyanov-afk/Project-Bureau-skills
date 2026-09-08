@@ -1937,6 +1937,41 @@ def read_family_type_names(app, path):
     return sorted(set(names))
 
 
+def read_family_types_batch(app, load_entries):
+    """
+    Читает типоразмеры для списка файлов каталога с индикатором прогресса.
+    (entry, [имена типоразмеров]) -> type_map; entries без читаемых типов -> passthru.
+
+    На некоторых машинах pyRevit'овский forms.ProgressBar падает при
+    позиционировании окна (AttributeError на HOST_APP.uiapp.MainWindowHandle
+    — баг самого pyRevit, не наш). Такой сбой не должен обрушивать всю
+    загрузку семейств — при падении прогресс-бара дочитываем типы без него.
+    """
+    type_map = []
+    passthru = []
+    try:
+        with forms.ProgressBar(
+            title=u"Чтение типоразмеров… ({value}/{max_value})"
+        ) as pb:
+            for i, e in enumerate(load_entries):
+                names = read_family_type_names(app, e.path)
+                if names:
+                    type_map.append((e, names))
+                else:
+                    passthru.append(e)
+                pb.update_progress(i + 1, len(load_entries))
+    except Exception:
+        type_map = []
+        passthru = []
+        for e in load_entries:
+            names = read_family_type_names(app, e.path)
+            if names:
+                type_map.append((e, names))
+            else:
+                passthru.append(e)
+    return type_map, passthru
+
+
 def apply_loads(doc, jobs, present_names, overwrite_params=True):
     """
     Загружает выбранные семейства/типоразмеры из каталога в модель напрямую
