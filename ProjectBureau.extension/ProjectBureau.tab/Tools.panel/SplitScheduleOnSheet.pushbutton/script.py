@@ -34,8 +34,10 @@ MM_IN_FOOT = 304.8
 # Расстояние между соседними участками спецификации в ряду
 GAP_MM = 25.0
 FALLBACK_STEP_MM = 300.0
-# Запас, чтобы участок гарантированно не вылезал за заданную высоту
-SAFETY_MM = 3.0
+# Запас на высоту участка вниз от запрошенной, мм. Высоты берутся из модели
+# таблицы и точны, так что запас не нужен; поставить >0, если участок всё же
+# перескакивает на следующую страницу из-за округления.
+SAFETY_MM = 0.0
 MAX_SEGMENTS = 60
 
 _debug = []
@@ -101,6 +103,35 @@ def parse_height_ft(raw):
     u"""Запрошенная высота одного участка на листе, футы. Число в мм, суффикс
     «мм» необязателен."""
     return to_float_mm(raw) / MM_IN_FOOT
+
+
+def body_total_ft(sched):
+    u"""Полная высота ТЕЛА спецификации = сумма высот строк секции Body из
+    модели таблицы, футы. Точно (как schedule_width_ft по столбцам), без
+    пробного Split. 0.0 — не вышло."""
+    try:
+        td = sched.GetTableData()
+        sd = td.GetSectionData(SectionType.Body)
+    except Exception as ex:
+        dbg(u"GetSectionData(Body): {}".format(ex))
+        return 0.0
+    if sd is None:
+        return 0.0
+    total = 0.0
+    rows = 0
+    try:
+        for r in range(sd.FirstRowNumber, sd.LastRowNumber + 1):
+            try:
+                h = sd.GetRowHeight(r)
+                if is_num(h) and h > 0:
+                    total += h
+                    rows += 1
+            except Exception:
+                pass
+    except Exception as ex:
+        dbg(u"строки тела: {}".format(ex))
+    dbg(u"тело таблицы: {:.1f} мм ({} строк)".format(total * MM_IN_FOOT, rows))
+    return total if (is_num(total) and total > 0) else 0.0
 
 
 def probe_body_ft(sched):
@@ -367,52 +398,60 @@ def main():
             u"Задайте больше.".format(amount * MM_IN_FOOT, header_ft * MM_IN_FOOT)
         )
 
-    probe = 0.0 if already_split else probe_body_ft(sched)
-    if probe > 0:
-        # проба занижает примерно на одну шапку — компенсируем
-        total_body_ft = probe + header_ft
-    else:
+    total_body_ft = body_total_ft(sched)
+    src = u"модель таблицы"
+    if total_body_ft <= 0 and not already_split:
+        probe = probe_body_ft(sched)
+        if probe > 0:
+            # проба занижает примерно на одну шапку — компенсируем
+            total_body_ft = probe + header_ft
+            src = u"проба Split(2)"
+    if total_body_ft <= 0:
         rv = ask(
             u"Высоту не удалось измерить.\n"
             u"Введите полную высоту всей спецификации на листе в мм:",
             2000
         )
         total_body_ft = max(0.0, to_float_mm(rv) / MM_IN_FOOT - header_ft)
+        src = u"вручную"
         dbg(u"высота вручную: тело {:.0f} мм".format(total_body_ft * MM_IN_FOOT))
 
     if total_body_ft <= 0:
         raise Stop(u"Не удалось определить высоту спецификации.")
 
-    # тело каждого участка (кроме последнего) — ровно под запрошенную
-    # высоту за вычетом небольшого запаса; последний добирает остаток
-    body_slot_ft = body_target_ft - SAFETY_MM / MM_IN_FOOT
-    if body_slot_ft <= 0:
-        body_slot_ft = body_target_ft
-    count = max(2, int(math.ceil(total_body_ft / body_slot_ft - 1e-9)))
-    # если последний участок вышел бы почти пустым (меньше шапки) —
-    # убрать его и раскидать остаток по остальным поровну
-    tail_ft = total_body_ft - body_slot_ft * (count - 1)
-    if count > 2 and tail_ft < max(header_ft, 10.0 / MM_IN_FOOT):
+    # тело каждого участка (кроме последнего) — ровно H - шапка; последний
+    # добирает остаток. Высоты берём из модели таблицы, поэтому без запаса.
+    body_each_ft = body_target_ft - SAFETY_MM / MM_IN_FOOT
+    if body_each_ft <= 0:
+        body_each_ft = body_target_ft
+    count = max(2, int(math.ceil(total_body_ft / body_each_ft - 1e-6)))
+    tail_ft = total_body_ft - body_each_ft * (count - 1)
+    # хвост меньше повторяющейся шапки — отдельный участок под него смысла не
+    # имеет: вливаем в предыдущий (он станет чуть выше запрошенного)
+    if count > 2 and tail_ft < header_ft:
         count -= 1
-        body_slot_ft = total_body_ft / count
+        tail_ft = total_body_ft - body_each_ft * (count - 1)
     if count >= MAX_SEGMENTS:
         raise Stop(
             u"Получается слишком много участков ({}+). Увеличьте высоту "
             u"участка.".format(MAX_SEGMENTS)
         )
-    body_each_ft = body_slot_ft
 
-    seg_mm = (body_each_ft + header_ft) * MM_IN_FOOT
+    full_mm = (body_each_ft + header_ft) * MM_IN_FOOT
+    last_mm = (tail_ft + header_ft) * MM_IN_FOOT
     if not forms.alert(
         u"Участков: {}\n"
-        u"Шапка (повторяется на каждом): {:.0f} мм\n"
-        u"Полная высота таблицы: {:.0f} мм\n"
-        u"Высота участка на листе: ~{:.0f} мм (запрошено {:.0f} мм)\n\n"
+        u"Шапка (на каждом участке): {:.0f} мм\n"
+        u"Полная высота таблицы: {:.0f} мм (источник: {})\n"
+        u"Высота участка: {:.0f} мм, последний ~{:.0f} мм "
+        u"(запрошено {:.0f} мм)\n\n"
         u"Разбить?".format(
             count,
             header_ft * MM_IN_FOOT,
             (total_body_ft + header_ft) * MM_IN_FOOT,
-            seg_mm,
+            src,
+            full_mm,
+            last_mm,
             amount * MM_IN_FOOT,
         ),
         yes=True, no=True
