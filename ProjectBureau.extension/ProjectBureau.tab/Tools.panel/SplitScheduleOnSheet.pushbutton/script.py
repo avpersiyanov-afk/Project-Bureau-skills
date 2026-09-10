@@ -97,19 +97,10 @@ def to_float_mm(raw):
     return v
 
 
-def parse_request(raw):
-    u"""('count', N) — N равных участков; ('mm', высота_фт) — по высоте."""
-    low = raw.strip().lower()
-    is_mm = any(low.endswith(s) for s in (u"мм", u"mm", u"м"))
-    value_mm = to_float_mm(raw)
-    if is_mm:
-        return "mm", value_mm / MM_IN_FOOT
-    count = int(round(value_mm))
-    if count < 2:
-        raise Stop(u"Участков должно быть хотя бы 2.")
-    if count > MAX_SEGMENTS:
-        raise Stop(u"{} участков — слишком много.".format(count))
-    return "count", count
+def parse_height_ft(raw):
+    u"""Запрошенная высота одного участка на листе, футы. Число в мм, суффикс
+    «мм» необязателен."""
+    return to_float_mm(raw) / MM_IN_FOOT
 
 
 def probe_body_ft(sched):
@@ -209,6 +200,52 @@ def instance_width_ft(inst):
     return w if (is_num(w) and w > 0) else 0.0
 
 
+def _row_instances(sched, sheet_id, count):
+    u"""{индекс сегмента 0..count-1: экземпляр на листе}."""
+    by_seg = {}
+    for inst in FilteredElementCollector(doc).OfClass(ScheduleSheetInstance):
+        if inst.ScheduleId.IntegerValue != sched.Id.IntegerValue:
+            continue
+        if inst.OwnerViewId.IntegerValue != sheet_id.IntegerValue:
+            continue
+        si = inst.SegmentIndex
+        if 0 <= si < count and si not in by_seg:
+            by_seg[si] = inst
+    return by_seg
+
+
+def correct_row_gap(sched, sheet_id, origin, width_ft, count):
+    u"""После разбиения фактическая ширина сегмента отличается от габарита
+    цельной спеки на ~несколько мм, из-за чего зазор в ряду уезжает. Меряем
+    ширину реального сегмента 0 и переставляем ряд так, чтобы просвет между
+    соседями был ровно GAP_MM."""
+    doc.Regenerate()
+    by_seg = _row_instances(sched, sheet_id, count)
+    seg0 = by_seg.get(0)
+    if seg0 is None:
+        return
+    real_w = instance_width_ft(seg0)
+    if not (is_num(real_w) and real_w > 0):
+        return
+    if width_ft > 0 and not (0.5 < real_w / width_ft < 2.0):
+        dbg(u"коррекция шага пропущена: ширина сегмента {:.1f} мм невероятна".format(
+            real_w * MM_IN_FOOT))
+        return
+    if width_ft > 0 and abs(real_w - width_ft) < 0.2 / MM_IN_FOOT:
+        return
+    step = real_w + GAP_MM / MM_IN_FOOT
+    dbg(u"коррекция шага: ширина сегмента {:.1f} мм (было в оценке {:.1f})".format(
+        real_w * MM_IN_FOOT, width_ft * MM_IN_FOOT))
+    for k, inst in by_seg.items():
+        try:
+            target = XYZ(origin.X + step * k, origin.Y, origin.Z)
+            delta = target - inst.Point
+            if delta.GetLength() > 1e-7:
+                ElementTransformUtils.MoveElement(doc, inst.Id, delta)
+        except Exception as ex:
+            dbg(u"коррекция сегм.{}: {}".format(k, ex))
+
+
 def arrange_in_row(sched, sheet_id, origin, width_ft, count, original_id):
     doc.Regenerate()
     if is_num(width_ft) and width_ft > 0:
@@ -267,6 +304,8 @@ def arrange_in_row(sched, sheet_id, origin, width_ft, count, original_id):
                 moved += 1
         except Exception as ex:
             dbg(u"Move сегм.{}: {}".format(k, ex))
+
+    correct_row_gap(sched, sheet_id, origin, width_ft, count)
     return created, moved, removed
 
 
@@ -299,98 +338,92 @@ def main():
             raise Cancelled()
 
     raw = ask(
-        u"На сколько участков разбить спецификацию? (например  3)\n"
-        u"Либо высота одного участка: число с «мм» (например  180мм).",
-        3
+        u"Высота одного участка спецификации на листе, мм (например  180).",
+        180
     )
-    mode, amount = parse_request(raw)
+    amount = parse_height_ft(raw)
 
     sheet_id = sched_inst.OwnerViewId
     origin = sched_inst.Point
     original_id = sched_inst.Id
     width_ft = instance_width_ft(sched_inst)
 
-    body_each_ft = amount
+    header_ft = header_height_ft(sched)
+    detected_mm = header_ft * MM_IN_FOOT
+    r3 = ask(
+        u"Высота повторяющейся шапки спецификации в мм "
+        u"(заголовок + строка названий граф).\n"
+        u"{}\n"
+        u"Исправьте, если определилось неверно; 0 — не учитывать:".format(
+            u"Определено автоматически: {:.0f} мм.".format(detected_mm)
+            if header_ft > 0 else u"Определить автоматически не удалось."
+        ),
+        int(round(detected_mm)) if header_ft > 0 else 0
+    ).strip().lower().replace(",", ".")
+    try:
+        header_ft = max(0.0, float(r3)) / MM_IN_FOOT
+    except ValueError:
+        pass
+    dbg(u"шапка итог: {:.0f} мм".format(header_ft * MM_IN_FOOT))
 
-    if mode == "count":
-        count = amount
+    body_target_ft = amount - header_ft
+    if body_target_ft <= 0:
+        raise Stop(
+            u"Высота участка {:.0f} мм не больше шапки таблицы (~{:.0f} мм). "
+            u"Задайте больше.".format(amount * MM_IN_FOOT, header_ft * MM_IN_FOOT)
+        )
+
+    probe = 0.0 if already_split else probe_body_ft(sched)
+    if probe > 0:
+        # проба занижает примерно на одну шапку — компенсируем
+        total_body_ft = probe + header_ft
     else:
-        header_ft = header_height_ft(sched)
-        detected_mm = header_ft * MM_IN_FOOT
-        r3 = ask(
-            u"Высота повторяющейся шапки спецификации в мм "
-            u"(заголовок + строка названий граф).\n"
-            u"{}\n"
-            u"Исправьте, если определилось неверно; 0 — не учитывать:".format(
-                u"Определено автоматически: {:.0f} мм.".format(detected_mm)
-                if header_ft > 0 else u"Определить автоматически не удалось."
-            ),
-            int(round(detected_mm)) if header_ft > 0 else 0
-        ).strip().lower().replace(",", ".")
-        try:
-            header_ft = max(0.0, float(r3)) / MM_IN_FOOT
-        except ValueError:
-            pass
-        dbg(u"шапка итог: {:.0f} мм".format(header_ft * MM_IN_FOOT))
+        rv = ask(
+            u"Высоту не удалось измерить.\n"
+            u"Введите полную высоту всей спецификации на листе в мм:",
+            2000
+        )
+        total_body_ft = max(0.0, to_float_mm(rv) / MM_IN_FOOT - header_ft)
+        dbg(u"высота вручную: тело {:.0f} мм".format(total_body_ft * MM_IN_FOOT))
 
-        body_target_ft = amount - header_ft
-        if body_target_ft <= 0:
-            raise Stop(
-                u"Высота участка {:.0f} мм не больше шапки таблицы (~{:.0f} мм). "
-                u"Задайте больше.".format(amount * MM_IN_FOOT, header_ft * MM_IN_FOOT)
-            )
+    if total_body_ft <= 0:
+        raise Stop(u"Не удалось определить высоту спецификации.")
 
-        probe = 0.0 if already_split else probe_body_ft(sched)
-        if probe > 0:
-            # проба занижает примерно на одну шапку — компенсируем
-            total_body_ft = probe + header_ft
-        else:
-            rv = ask(
-                u"Высоту не удалось измерить.\n"
-                u"Введите полную высоту всей спецификации на листе в мм:",
-                2000
-            )
-            total_body_ft = max(0.0, to_float_mm(rv) / MM_IN_FOOT - header_ft)
-            dbg(u"высота вручную: тело {:.0f} мм".format(total_body_ft * MM_IN_FOOT))
+    # тело каждого участка (кроме последнего) — ровно под запрошенную
+    # высоту за вычетом небольшого запаса; последний добирает остаток
+    body_slot_ft = body_target_ft - SAFETY_MM / MM_IN_FOOT
+    if body_slot_ft <= 0:
+        body_slot_ft = body_target_ft
+    count = max(2, int(math.ceil(total_body_ft / body_slot_ft - 1e-9)))
+    # если последний участок вышел бы почти пустым (меньше шапки) —
+    # убрать его и раскидать остаток по остальным поровну
+    tail_ft = total_body_ft - body_slot_ft * (count - 1)
+    if count > 2 and tail_ft < max(header_ft, 10.0 / MM_IN_FOOT):
+        count -= 1
+        body_slot_ft = total_body_ft / count
+    if count >= MAX_SEGMENTS:
+        raise Stop(
+            u"Получается слишком много участков ({}+). Увеличьте высоту "
+            u"участка.".format(MAX_SEGMENTS)
+        )
+    body_each_ft = body_slot_ft
 
-        if total_body_ft <= 0:
-            raise Stop(u"Не удалось определить высоту спецификации.")
-
-        # тело каждого участка (кроме последнего) — ровно под запрошенную
-        # высоту за вычетом небольшого запаса; последний добирает остаток
-        body_slot_ft = body_target_ft - SAFETY_MM / MM_IN_FOOT
-        if body_slot_ft <= 0:
-            body_slot_ft = body_target_ft
-        count = max(2, int(math.ceil(total_body_ft / body_slot_ft - 1e-9)))
-        # если последний участок вышел бы почти пустым (меньше шапки) —
-        # убрать его и раскидать остаток по остальным поровну
-        tail_ft = total_body_ft - body_slot_ft * (count - 1)
-        if count > 2 and tail_ft < max(header_ft, 10.0 / MM_IN_FOOT):
-            count -= 1
-            body_slot_ft = total_body_ft / count
-        if count >= MAX_SEGMENTS:
-            raise Stop(
-                u"Получается слишком много участков ({}+). Увеличьте высоту "
-                u"участка.".format(MAX_SEGMENTS)
-            )
-        body_each_ft = body_slot_ft
-
-        seg_mm = (body_each_ft + header_ft) * MM_IN_FOOT
-        if not forms.alert(
-            u"Участков: {}\n"
-            u"Шапка (повторяется на каждом): {:.0f} мм\n"
-            u"Полная высота таблицы: {:.0f} мм\n"
-            u"Высота участка на листе: ~{:.0f} мм (запрошено {:.0f} мм)\n\n"
-            u"Разбить?".format(
-                count,
-                header_ft * MM_IN_FOOT,
-                (total_body_ft + header_ft) * MM_IN_FOOT,
-                seg_mm,
-                amount * MM_IN_FOOT,
-            ),
-            yes=True, no=True
-        ):
-            raise Cancelled()
+    seg_mm = (body_each_ft + header_ft) * MM_IN_FOOT
+    if not forms.alert(
+        u"Участков: {}\n"
+        u"Шапка (повторяется на каждом): {:.0f} мм\n"
+        u"Полная высота таблицы: {:.0f} мм\n"
+        u"Высота участка на листе: ~{:.0f} мм (запрошено {:.0f} мм)\n\n"
+        u"Разбить?".format(
+            count,
+            header_ft * MM_IN_FOOT,
+            (total_body_ft + header_ft) * MM_IN_FOOT,
+            seg_mm,
+            amount * MM_IN_FOOT,
+        ),
+        yes=True, no=True
+    ):
+        raise Cancelled()
 
     with revit.Transaction(u"Разбить спецификацию на листе"):
         if sched.GetSegmentCount() > 1:
@@ -404,13 +437,10 @@ def main():
                     )
                 )
 
-        if mode == "mm":
-            heights = List[float]()
-            for _ in range(count - 1):
-                heights.Add(body_each_ft)
-            sched.Split(heights)
-        else:
-            sched.Split(count)
+        heights = List[float]()
+        for _ in range(count - 1):
+            heights.Add(body_each_ft)
+        sched.Split(heights)
 
         doc.Regenerate()
         arrange_in_row(sched, sheet_id, origin, width_ft, count, original_id)
