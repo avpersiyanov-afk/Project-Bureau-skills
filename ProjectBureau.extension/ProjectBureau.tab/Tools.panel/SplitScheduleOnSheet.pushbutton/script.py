@@ -33,10 +33,6 @@ MM_IN_FOOT = 304.8
 # Расстояние между соседними участками спецификации в ряду
 GAP_MM = 25.0
 FALLBACK_STEP_MM = 300.0
-# Запас на высоту участка вниз от запрошенной, мм. Высоты берутся из модели
-# таблицы и точны, так что запас не нужен; поставить >0, если участок всё же
-# перескакивает на следующую страницу из-за округления.
-SAFETY_MM = 0.0
 MAX_SEGMENTS = 60
 
 _debug = []
@@ -397,14 +393,16 @@ def main():
             u"Задайте больше.".format(amount * MM_IN_FOOT, header_ft * MM_IN_FOOT)
         )
 
-    total_body_ft = body_total_ft(sched)
-    src = u"модель таблицы"
-    if total_body_ft <= 0 and not already_split:
-        probe = probe_body_ft(sched)
-        if probe > 0:
-            # проба занижает примерно на одну шапку — компенсируем
-            total_body_ft = probe + header_ft
-            src = u"проба Split(2)"
+    # Полная высота тела. Проба Split(2) читает УЖЕ РАССЧИТАННУЮ Revit'ом
+    # раскладку -> достовернее суммы GetRowHeight (та не учитывает перенос
+    # строк). Сумма строк и ручной ввод — запасные варианты.
+    src = u"проба Split(2)"
+    total_body_ft = 0.0 if already_split else probe_body_ft(sched)
+    if total_body_ft > 0:
+        total_body_ft += header_ft  # проба занижает примерно на одну шапку
+    else:
+        total_body_ft = body_total_ft(sched)
+        src = u"сумма строк"
     if total_body_ft <= 0:
         rv = ask(
             u"Высоту не удалось измерить.\n"
@@ -418,32 +416,27 @@ def main():
     if total_body_ft <= 0:
         raise Stop(u"Не удалось определить высоту спецификации.")
 
-    # Делим на N РАВНЫХ участков (Split(int) — единственная надёжная перегрузка;
-    # Split(список высот) здесь схлопывает все участки кроме последнего).
-    # N подбираем так, чтобы равный участок не превышал запрошенную высоту.
-    body_slot_ft = body_target_ft - SAFETY_MM / MM_IN_FOOT
-    if body_slot_ft <= 0:
-        body_slot_ft = body_target_ft
-    count = max(2, int(math.ceil(total_body_ft / body_slot_ft - 1e-6)))
+    # N участков: столько, чтобы тело первых N-1 (по body_target каждый)
+    # вместило почти всю таблицу, последний добрал остаток.
+    count = max(2, int(math.ceil(total_body_ft / body_target_ft - 0.02)))
     if count >= MAX_SEGMENTS:
         raise Stop(
             u"Получается слишком много участков ({}+). Увеличьте высоту "
             u"участка.".format(MAX_SEGMENTS)
         )
 
-    seg_mm = (total_body_ft / count + header_ft) * MM_IN_FOOT
     if not forms.alert(
-        u"Участков: {} (равные)\n"
+        u"Участков: {}\n"
         u"Шапка (на каждом участке): {:.0f} мм\n"
         u"Полная высота таблицы: {:.0f} мм (источник: {})\n"
-        u"Высота участка на листе: ~{:.0f} мм "
-        u"(запрошено не более {:.0f} мм)\n\n"
+        u"Первые {} участка(ов) — по {:.0f} мм (насколько позволит целое "
+        u"число строк), последний — остаток.\n\n"
         u"Разбить?".format(
             count,
             header_ft * MM_IN_FOOT,
             (total_body_ft + header_ft) * MM_IN_FOOT,
             src,
-            seg_mm,
+            count - 1,
             amount * MM_IN_FOOT,
         ),
         yes=True, no=True
@@ -463,8 +456,22 @@ def main():
                 )
 
         sched.Split(count)
-
         doc.Regenerate()
+        # Split(int) режет на равные части; принудительно задаём границу каждого
+        # участка (кроме последнего) под запрошенную высоту. SetSegmentHeight —
+        # это ГРАНИЦА (шапка + тело); реальная высота на листе <= неё и кратна
+        # строкам, последний участок вбирает остаток.
+        pinned = 0
+        for i in range(count - 1):
+            try:
+                sched.SetSegmentHeight(i, amount)
+                pinned += 1
+            except Exception as ex:
+                dbg(u"SetSegmentHeight({}): {}".format(i, ex))
+        if pinned:
+            doc.Regenerate()
+        dbg(u"границы участков заданы: {}/{}".format(pinned, count - 1))
+
         arrange_in_row(sched, sheet_id, origin, width_ft, count, original_id)
 
     # Успех — без итогового окна. Сообщения показываем только при отмене/сбое.
