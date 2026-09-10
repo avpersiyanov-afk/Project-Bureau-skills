@@ -186,8 +186,9 @@ def unsplit(sched):
 
 
 def instance_width_ft(inst):
-    u"""Ширина размещённого экземпляра спецификации на листе, футы (до разбиения
-    габарит по X достоверный, в отличие от габарита по Y)."""
+    u"""Габарит размещённого экземпляра спецификации по X на листе, футы.
+    Внимание: bbox экземпляра примерно на 4 мм шире реально нарисованной
+    таблицы — для шага ряда использовать schedule_width_ft."""
     sheet = doc.GetElement(inst.OwnerViewId)
     try:
         bb = inst.get_BoundingBox(sheet)
@@ -200,50 +201,36 @@ def instance_width_ft(inst):
     return w if (is_num(w) and w > 0) else 0.0
 
 
-def _row_instances(sched, sheet_id, count):
-    u"""{индекс сегмента 0..count-1: экземпляр на листе}."""
-    by_seg = {}
-    for inst in FilteredElementCollector(doc).OfClass(ScheduleSheetInstance):
-        if inst.ScheduleId.IntegerValue != sched.Id.IntegerValue:
-            continue
-        if inst.OwnerViewId.IntegerValue != sheet_id.IntegerValue:
-            continue
-        si = inst.SegmentIndex
-        if 0 <= si < count and si not in by_seg:
-            by_seg[si] = inst
-    return by_seg
-
-
-def correct_row_gap(sched, sheet_id, origin, width_ft, count):
-    u"""После разбиения фактическая ширина сегмента отличается от габарита
-    цельной спеки на ~несколько мм, из-за чего зазор в ряду уезжает. Меряем
-    ширину реального сегмента 0 и переставляем ряд так, чтобы просвет между
-    соседями был ровно GAP_MM."""
-    doc.Regenerate()
-    by_seg = _row_instances(sched, sheet_id, count)
-    seg0 = by_seg.get(0)
-    if seg0 is None:
-        return
-    real_w = instance_width_ft(seg0)
-    if not (is_num(real_w) and real_w > 0):
-        return
-    if width_ft > 0 and not (0.5 < real_w / width_ft < 2.0):
-        dbg(u"коррекция шага пропущена: ширина сегмента {:.1f} мм невероятна".format(
-            real_w * MM_IN_FOOT))
-        return
-    if width_ft > 0 and abs(real_w - width_ft) < 0.2 / MM_IN_FOOT:
-        return
-    step = real_w + GAP_MM / MM_IN_FOOT
-    dbg(u"коррекция шага: ширина сегмента {:.1f} мм (было в оценке {:.1f})".format(
-        real_w * MM_IN_FOOT, width_ft * MM_IN_FOOT))
-    for k, inst in by_seg.items():
+def schedule_width_ft(sched):
+    u"""Реальная ширина таблицы = сумма ширин столбцов из модели таблицы, футы.
+    Достовернее габарита экземпляра (у того лишку ~4 мм с краёв). 0.0 — не вышло."""
+    try:
+        td = sched.GetTableData()
+    except Exception as ex:
+        dbg(u"GetTableData (ширина): {}".format(ex))
+        return 0.0
+    for st in (SectionType.Body, SectionType.Header):
         try:
-            target = XYZ(origin.X + step * k, origin.Y, origin.Z)
-            delta = target - inst.Point
-            if delta.GetLength() > 1e-7:
-                ElementTransformUtils.MoveElement(doc, inst.Id, delta)
+            sd = td.GetSectionData(st)
+        except Exception:
+            sd = None
+        if sd is None:
+            continue
+        total = 0.0
+        cols = 0
+        try:
+            for c in range(sd.FirstColumnNumber, sd.LastColumnNumber + 1):
+                w = sd.GetColumnWidth(c)
+                if is_num(w) and w > 0:
+                    total += w
+                    cols += 1
         except Exception as ex:
-            dbg(u"коррекция сегм.{}: {}".format(k, ex))
+            dbg(u"ширины столбцов ({}): {}".format(st, ex))
+        if total > 0:
+            dbg(u"ширина таблицы: {:.1f} мм ({} столбцов, {})".format(
+                total * MM_IN_FOOT, cols, st))
+            return total
+    return 0.0
 
 
 def arrange_in_row(sched, sheet_id, origin, width_ft, count, original_id):
@@ -304,8 +291,6 @@ def arrange_in_row(sched, sheet_id, origin, width_ft, count, original_id):
                 moved += 1
         except Exception as ex:
             dbg(u"Move сегм.{}: {}".format(k, ex))
-
-    correct_row_gap(sched, sheet_id, origin, width_ft, count)
     return created, moved, removed
 
 
@@ -346,7 +331,16 @@ def main():
     sheet_id = sched_inst.OwnerViewId
     origin = sched_inst.Point
     original_id = sched_inst.Id
-    width_ft = instance_width_ft(sched_inst)
+    # ширина для шага ряда: сумма ширин столбцов (точная), габарит экземпляра —
+    # запасной вариант (он на ~4 мм шире таблицы -> зазор уезжал на эти мм)
+    col_w = schedule_width_ft(sched)
+    bb_w = instance_width_ft(sched_inst)
+    if col_w > 0 and (bb_w <= 0 or col_w <= bb_w + 2.0 / MM_IN_FOOT):
+        width_ft = col_w
+    else:
+        width_ft = bb_w
+    dbg(u"ширина для раскладки: {:.1f} мм (столбцы {:.1f}, габарит {:.1f})".format(
+        width_ft * MM_IN_FOOT, col_w * MM_IN_FOOT, bb_w * MM_IN_FOOT))
 
     header_ft = header_height_ft(sched)
     detected_mm = header_ft * MM_IN_FOOT
