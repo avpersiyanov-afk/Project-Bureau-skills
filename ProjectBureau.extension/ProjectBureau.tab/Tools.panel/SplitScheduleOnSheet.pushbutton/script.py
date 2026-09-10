@@ -31,7 +31,8 @@ uidoc = revit.uidoc
 
 MM_IN_FOOT = 304.8
 
-GAP_MM = 5.0
+# Расстояние между соседними участками спецификации в ряду
+GAP_MM = 25.0
 FALLBACK_STEP_MM = 300.0
 # Запас, чтобы участок гарантированно не вылезал за заданную высоту
 SAFETY_MM = 3.0
@@ -315,18 +316,22 @@ def main():
         count = amount
     else:
         header_ft = header_height_ft(sched)
-        if header_ft <= 0:
-            r3 = ask(
-                u"Не смог определить высоту повторяющейся шапки спецификации.\n"
-                u"Введите её в мм (заголовок + строка названий граф; 0 — не "
-                u"учитывать):",
-                0
-            ).strip().lower().replace(",", ".")
-            try:
-                header_ft = max(0.0, float(r3)) / MM_IN_FOOT
-            except ValueError:
-                header_ft = 0.0
-            dbg(u"шапка вручную: {:.0f} мм".format(header_ft * MM_IN_FOOT))
+        detected_mm = header_ft * MM_IN_FOOT
+        r3 = ask(
+            u"Высота повторяющейся шапки спецификации в мм "
+            u"(заголовок + строка названий граф).\n"
+            u"{}\n"
+            u"Исправьте, если определилось неверно; 0 — не учитывать:".format(
+                u"Определено автоматически: {:.0f} мм.".format(detected_mm)
+                if header_ft > 0 else u"Определить автоматически не удалось."
+            ),
+            int(round(detected_mm)) if header_ft > 0 else 0
+        ).strip().lower().replace(",", ".")
+        try:
+            header_ft = max(0.0, float(r3)) / MM_IN_FOOT
+        except ValueError:
+            pass
+        dbg(u"шапка итог: {:.0f} мм".format(header_ft * MM_IN_FOOT))
 
         body_target_ft = amount - header_ft
         if body_target_ft <= 0:
@@ -351,17 +356,41 @@ def main():
         if total_body_ft <= 0:
             raise Stop(u"Не удалось определить высоту спецификации.")
 
-        eff = body_target_ft - SAFETY_MM / MM_IN_FOOT
-        if eff <= 0:
-            eff = body_target_ft
-        count = max(2, int(math.ceil(total_body_ft / eff - 1e-9)))
+        # тело каждого участка (кроме последнего) — ровно под запрошенную
+        # высоту за вычетом небольшого запаса; последний добирает остаток
+        body_slot_ft = body_target_ft - SAFETY_MM / MM_IN_FOOT
+        if body_slot_ft <= 0:
+            body_slot_ft = body_target_ft
+        count = max(2, int(math.ceil(total_body_ft / body_slot_ft - 1e-9)))
+        # если последний участок вышел бы почти пустым (меньше шапки) —
+        # убрать его и раскидать остаток по остальным поровну
+        tail_ft = total_body_ft - body_slot_ft * (count - 1)
+        if count > 2 and tail_ft < max(header_ft, 10.0 / MM_IN_FOOT):
+            count -= 1
+            body_slot_ft = total_body_ft / count
         if count >= MAX_SEGMENTS:
             raise Stop(
                 u"Получается слишком много участков ({}+). Увеличьте высоту "
                 u"участка.".format(MAX_SEGMENTS)
             )
-        # равные по телу участки — без «хвоста» из одной шапки
-        body_each_ft = total_body_ft / count
+        body_each_ft = body_slot_ft
+
+        seg_mm = (body_each_ft + header_ft) * MM_IN_FOOT
+        if not forms.alert(
+            u"Участков: {}\n"
+            u"Шапка (повторяется на каждом): {:.0f} мм\n"
+            u"Полная высота таблицы: {:.0f} мм\n"
+            u"Высота участка на листе: ~{:.0f} мм (запрошено {:.0f} мм)\n\n"
+            u"Разбить?".format(
+                count,
+                header_ft * MM_IN_FOOT,
+                (total_body_ft + header_ft) * MM_IN_FOOT,
+                seg_mm,
+                amount * MM_IN_FOOT,
+            ),
+            yes=True, no=True
+        ):
+            raise Cancelled()
 
     with revit.Transaction(u"Разбить спецификацию на листе"):
         if sched.GetSegmentCount() > 1:
