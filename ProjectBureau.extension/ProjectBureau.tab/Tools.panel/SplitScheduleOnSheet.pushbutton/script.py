@@ -12,7 +12,6 @@ clr.AddReference('RevitAPI')
 clr.AddReference('RevitAPIUI')
 clr.AddReference('Microsoft.VisualBasic')
 
-from System.Collections.Generic import List
 from Microsoft.VisualBasic import Interaction
 from Autodesk.Revit.DB import (
     ElementTransformUtils,
@@ -419,39 +418,32 @@ def main():
     if total_body_ft <= 0:
         raise Stop(u"Не удалось определить высоту спецификации.")
 
-    # тело каждого участка (кроме последнего) — ровно H - шапка; последний
-    # добирает остаток. Высоты берём из модели таблицы, поэтому без запаса.
-    body_each_ft = body_target_ft - SAFETY_MM / MM_IN_FOOT
-    if body_each_ft <= 0:
-        body_each_ft = body_target_ft
-    count = max(2, int(math.ceil(total_body_ft / body_each_ft - 1e-6)))
-    tail_ft = total_body_ft - body_each_ft * (count - 1)
-    # хвост меньше повторяющейся шапки — отдельный участок под него смысла не
-    # имеет: вливаем в предыдущий (он станет чуть выше запрошенного)
-    if count > 2 and tail_ft < header_ft:
-        count -= 1
-        tail_ft = total_body_ft - body_each_ft * (count - 1)
+    # Делим на N РАВНЫХ участков (Split(int) — единственная надёжная перегрузка;
+    # Split(список высот) здесь схлопывает все участки кроме последнего).
+    # N подбираем так, чтобы равный участок не превышал запрошенную высоту.
+    body_slot_ft = body_target_ft - SAFETY_MM / MM_IN_FOOT
+    if body_slot_ft <= 0:
+        body_slot_ft = body_target_ft
+    count = max(2, int(math.ceil(total_body_ft / body_slot_ft - 1e-6)))
     if count >= MAX_SEGMENTS:
         raise Stop(
             u"Получается слишком много участков ({}+). Увеличьте высоту "
             u"участка.".format(MAX_SEGMENTS)
         )
 
-    full_mm = (body_each_ft + header_ft) * MM_IN_FOOT
-    last_mm = (tail_ft + header_ft) * MM_IN_FOOT
+    seg_mm = (total_body_ft / count + header_ft) * MM_IN_FOOT
     if not forms.alert(
-        u"Участков: {}\n"
+        u"Участков: {} (равные)\n"
         u"Шапка (на каждом участке): {:.0f} мм\n"
         u"Полная высота таблицы: {:.0f} мм (источник: {})\n"
-        u"Высота участка: {:.0f} мм, последний ~{:.0f} мм "
-        u"(запрошено {:.0f} мм)\n\n"
+        u"Высота участка на листе: ~{:.0f} мм "
+        u"(запрошено не более {:.0f} мм)\n\n"
         u"Разбить?".format(
             count,
             header_ft * MM_IN_FOOT,
             (total_body_ft + header_ft) * MM_IN_FOOT,
             src,
-            full_mm,
-            last_mm,
+            seg_mm,
             amount * MM_IN_FOOT,
         ),
         yes=True, no=True
@@ -470,10 +462,7 @@ def main():
                     )
                 )
 
-        heights = List[float]()
-        for _ in range(count - 1):
-            heights.Add(body_each_ft)
-        sched.Split(heights)
+        sched.Split(count)
 
         doc.Regenerate()
         arrange_in_row(sched, sheet_id, origin, width_ft, count, original_id)
