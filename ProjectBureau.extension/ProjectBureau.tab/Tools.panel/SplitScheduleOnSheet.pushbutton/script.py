@@ -474,7 +474,15 @@ def main():
 
         arrange_in_row(sched, sheet_id, origin, width_ft, count, original_id)
 
-    # Успех — без итогового окна. Сообщения показываем только при отмене/сбое.
+    if count > 2 and pinned == 0:
+        forms.alert(
+            u"Высоту участков задать через API не удалось — Revit разбил на {} "
+            u"равные части. Проверьте результат.\n\n{}".format(
+                count, u"\n".join(_debug)
+            ),
+            title=u"Разбить спецификацию"
+        )
+    # Иначе успех — без итогового окна.
 
 
 try:
