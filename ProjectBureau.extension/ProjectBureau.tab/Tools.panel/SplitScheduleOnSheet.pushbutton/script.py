@@ -228,8 +228,37 @@ def instance_width_ft(inst):
 
 
 def schedule_width_ft(sched):
-    u"""Реальная ширина таблицы = сумма ширин столбцов из модели таблицы, футы.
-    Достовернее габарита экземпляра (у того лишку ~4 мм с краёв). 0.0 — не вышло."""
+    u"""Реальная ширина таблицы, футы. Достовернее габарита экземпляра (у того
+    лишку ~4 мм с краёв) и суммы по TableSectionData (та тянет и СКРЫТЫЕ
+    столбцы). Основной путь — сумма ScheduleField.SheetColumnWidth по полям,
+    у которых IsHidden=False. 0.0 — не вышло."""
+    try:
+        definition = sched.Definition
+    except Exception as ex:
+        dbg(u"Definition (ширина): {}".format(ex))
+        definition = None
+    if definition is not None:
+        total = 0.0
+        cols = 0
+        hidden = 0
+        try:
+            for i in range(definition.GetFieldCount()):
+                f = definition.GetField(i)
+                if f.IsHidden:
+                    hidden += 1
+                    continue
+                w = f.SheetColumnWidth
+                if is_num(w) and w > 0:
+                    total += w
+                    cols += 1
+        except Exception as ex:
+            dbg(u"поля (ширина): {}".format(ex))
+        if total > 0:
+            dbg(u"ширина по полям: {:.1f} мм ({} видимых, {} скрытых)".format(
+                total * MM_IN_FOOT, cols, hidden))
+            return total
+
+    # запасной путь — секции таблицы (может включать скрытые столбцы)
     try:
         td = sched.GetTableData()
     except Exception as ex:
