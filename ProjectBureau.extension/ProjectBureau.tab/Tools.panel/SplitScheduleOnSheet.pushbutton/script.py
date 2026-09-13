@@ -30,9 +30,10 @@ uidoc = revit.uidoc
 
 MM_IN_FOOT = 304.8
 
-# Расстояние между соседними участками спецификации в ряду
-GAP_MM = 25.0
-FALLBACK_STEP_MM = 300.0
+# Шаг ряда: следующий участок начинается через столько мм ОТ НАЧАЛА
+# предыдущего (не от его правого края) — фиксированное значение, не зависит
+# от реальной ширины таблицы (в т.ч. от скрытых столбцов).
+COLUMN_PITCH_MM = 420.0
 MAX_SEGMENTS = 60
 
 _debug = []
@@ -100,10 +101,10 @@ def parse_height_ft(raw):
     return to_float_mm(raw) / MM_IN_FOOT
 
 
-def body_total_ft(sched):
-    u"""Полная высота ТЕЛА спецификации = сумма высот строк секции Body из
-    модели таблицы, футы. Точно (как schedule_width_ft по столбцам), без
-    пробного Split. 0.0 — не вышло."""
+def body_rows_total_ft(sched):
+    u"""Сумма высот строк секции Body из модели таблицы, футы (без шапки).
+    Не учитывает перенос текста в ячейках — используется только как самый
+    последний запасной вариант. 0.0 — не вышло."""
     try:
         td = sched.GetTableData()
         sd = td.GetSectionData(SectionType.Body)
@@ -125,16 +126,20 @@ def body_total_ft(sched):
                 pass
     except Exception as ex:
         dbg(u"строки тела: {}".format(ex))
-    dbg(u"тело таблицы: {:.1f} мм ({} строк)".format(total * MM_IN_FOOT, rows))
+    dbg(u"сумма строк тела: {:.1f} мм ({} строк)".format(total * MM_IN_FOOT, rows))
     return total if (is_num(total) and total > 0) else 0.0
 
 
-def probe_body_ft(sched):
+def probe_total_border_ft(sched):
     u"""
-    Оценка высоты ТЕЛА спеки (строки данных), футы. 0.0 — не вышло.
-    Split(2) во временной транзакции -> GetSegmentHeight(0) (это предел тела
-    первой из двух равных частей) -> *2 -> откат. Проба стабильно занижает
-    результат примерно на высоту одной шапки — это учитывается снаружи.
+    Оценка ПОЛНОЙ высоты спецификации (шапка + всё тело), футы. 0.0 — не
+    вышло. Split(2) во временной транзакции (RollBack, без последствий) ->
+    GetSegmentHeight(0). По документации RevitAPI (Split(int)/GetSegmentHeight):
+    возвращаемое значение — это ГРАНИЦА сегмента (шапка+тело), и Split(int)
+    делит именно эту полную высоту поровну. Значит для Split(2):
+    GetSegmentHeight(0) = ПолнаяВысота / 2 -> ПолнаяВысота = 2 * GetSegmentHeight(0).
+    Это та же величина, что ожидает SetSegmentHeight, поэтому дальше не нужно
+    отдельно прибавлять/вычитать шапку.
     """
     h0 = None
     t = Transaction(doc, u"Замер спецификации")
@@ -151,7 +156,7 @@ def probe_body_ft(sched):
         except Exception as ex:
             dbg(u"откат пробы: {}".format(ex))
     total = 2.0 * h0 if (is_num(h0) and h0 > 0) else 0.0
-    dbg(u"проба тела: {:.0f} мм (GetSegmentHeight(0)={})".format(
+    dbg(u"проба полной высоты: {:.0f} мм (GetSegmentHeight(0)={})".format(
         total * MM_IN_FOOT, h0))
     return total
 
@@ -211,89 +216,9 @@ def unsplit(sched):
         guard += 1
 
 
-def instance_width_ft(inst):
-    u"""Габарит размещённого экземпляра спецификации по X на листе, футы.
-    Внимание: bbox экземпляра примерно на 4 мм шире реально нарисованной
-    таблицы — для шага ряда использовать schedule_width_ft."""
-    sheet = doc.GetElement(inst.OwnerViewId)
-    try:
-        bb = inst.get_BoundingBox(sheet)
-    except Exception as ex:
-        dbg(u"bbox ширины: {}".format(ex))
-        bb = None
-    if bb is None:
-        return 0.0
-    w = bb.Max.X - bb.Min.X
-    return w if (is_num(w) and w > 0) else 0.0
-
-
-def schedule_width_ft(sched):
-    u"""Реальная ширина таблицы, футы. Достовернее габарита экземпляра (у того
-    лишку ~4 мм с краёв) и суммы по TableSectionData (та тянет и СКРЫТЫЕ
-    столбцы). Основной путь — сумма ScheduleField.SheetColumnWidth по полям,
-    у которых IsHidden=False. 0.0 — не вышло."""
-    try:
-        definition = sched.Definition
-    except Exception as ex:
-        dbg(u"Definition (ширина): {}".format(ex))
-        definition = None
-    if definition is not None:
-        total = 0.0
-        cols = 0
-        hidden = 0
-        try:
-            for i in range(definition.GetFieldCount()):
-                f = definition.GetField(i)
-                if f.IsHidden:
-                    hidden += 1
-                    continue
-                w = f.SheetColumnWidth
-                if is_num(w) and w > 0:
-                    total += w
-                    cols += 1
-        except Exception as ex:
-            dbg(u"поля (ширина): {}".format(ex))
-        if total > 0:
-            dbg(u"ширина по полям: {:.1f} мм ({} видимых, {} скрытых)".format(
-                total * MM_IN_FOOT, cols, hidden))
-            return total
-
-    # запасной путь — секции таблицы (может включать скрытые столбцы)
-    try:
-        td = sched.GetTableData()
-    except Exception as ex:
-        dbg(u"GetTableData (ширина): {}".format(ex))
-        return 0.0
-    for st in (SectionType.Body, SectionType.Header):
-        try:
-            sd = td.GetSectionData(st)
-        except Exception:
-            sd = None
-        if sd is None:
-            continue
-        total = 0.0
-        cols = 0
-        try:
-            for c in range(sd.FirstColumnNumber, sd.LastColumnNumber + 1):
-                w = sd.GetColumnWidth(c)
-                if is_num(w) and w > 0:
-                    total += w
-                    cols += 1
-        except Exception as ex:
-            dbg(u"ширины столбцов ({}): {}".format(st, ex))
-        if total > 0:
-            dbg(u"ширина таблицы: {:.1f} мм ({} столбцов, {})".format(
-                total * MM_IN_FOOT, cols, st))
-            return total
-    return 0.0
-
-
-def arrange_in_row(sched, sheet_id, origin, width_ft, count, original_id):
+def arrange_in_row(sched, sheet_id, origin, count, original_id):
     doc.Regenerate()
-    if is_num(width_ft) and width_ft > 0:
-        step = width_ft + GAP_MM / MM_IN_FOOT
-    else:
-        step = FALLBACK_STEP_MM / MM_IN_FOOT
+    step = COLUMN_PITCH_MM / MM_IN_FOOT
 
     # Собрать экземпляры этой спеки на этом листе; первый на каждый валидный
     # индекс сегмента оставляем, всё остальное (старая цельная спека до
@@ -386,16 +311,6 @@ def main():
     sheet_id = sched_inst.OwnerViewId
     origin = sched_inst.Point
     original_id = sched_inst.Id
-    # ширина для шага ряда: сумма ширин столбцов (точная), габарит экземпляра —
-    # запасной вариант (он на ~4 мм шире таблицы -> зазор уезжал на эти мм)
-    col_w = schedule_width_ft(sched)
-    bb_w = instance_width_ft(sched_inst)
-    if col_w > 0 and (bb_w <= 0 or col_w <= bb_w + 2.0 / MM_IN_FOOT):
-        width_ft = col_w
-    else:
-        width_ft = bb_w
-    dbg(u"ширина для раскладки: {:.1f} мм (столбцы {:.1f}, габарит {:.1f})".format(
-        width_ft * MM_IN_FOOT, col_w * MM_IN_FOOT, bb_w * MM_IN_FOOT))
 
     header_ft = header_height_ft(sched)
     detected_mm = header_ft * MM_IN_FOOT
@@ -415,39 +330,42 @@ def main():
         pass
     dbg(u"шапка итог: {:.0f} мм".format(header_ft * MM_IN_FOOT))
 
-    body_target_ft = amount - header_ft
-    if body_target_ft <= 0:
+    if amount <= header_ft:
         raise Stop(
             u"Высота участка {:.0f} мм не больше шапки таблицы (~{:.0f} мм). "
             u"Задайте больше.".format(amount * MM_IN_FOOT, header_ft * MM_IN_FOOT)
         )
 
-    # Полная высота тела. Проба Split(2) читает УЖЕ РАССЧИТАННУЮ Revit'ом
-    # раскладку -> достовернее суммы GetRowHeight (та не учитывает перенос
-    # строк). Сумма строк и ручной ввод — запасные варианты.
-    src = u"проба Split(2)"
-    total_body_ft = 0.0 if already_split else probe_body_ft(sched)
-    if total_body_ft > 0:
-        total_body_ft += header_ft  # проба занижает примерно на одну шапку
-    else:
-        total_body_ft = body_total_ft(sched)
-        src = u"сумма строк"
-    if total_body_ft <= 0:
-        rv = ask(
-            u"Высоту не удалось измерить.\n"
-            u"Введите полную высоту всей спецификации на листе в мм:",
-            2000
-        )
-        total_body_ft = max(0.0, to_float_mm(rv) / MM_IN_FOOT - header_ft)
-        src = u"вручную"
-        dbg(u"высота вручную: тело {:.0f} мм".format(total_body_ft * MM_IN_FOOT))
+    # Полная высота спецификации (шапка + всё тело) — та же величина, что
+    # ожидает SetSegmentHeight. Проба Split(2) читает уже рассчитанную
+    # Revit'ом раскладку; сумма строк секции Body (+ шапка) и ручной ввод —
+    # запасные варианты. Автоопределение здесь и раньше ошибалось, поэтому
+    # значение ВСЕГДА показывается для проверки/правки, как высота шапки.
+    guess_ft = 0.0 if already_split else probe_total_border_ft(sched)
+    guess_src = u"проба Split(2)"
+    if guess_ft <= 0:
+        rows_ft = body_rows_total_ft(sched)
+        if rows_ft > 0:
+            guess_ft = rows_ft + header_ft
+            guess_src = u"сумма строк + шапка"
+    guess_mm = guess_ft * MM_IN_FOOT
+    rv = ask(
+        u"Полная высота спецификации на листе — шапка + все строки, мм.\n"
+        u"{}\n"
+        u"Проверьте по факту (например, в свойствах вида) и исправьте, если "
+        u"не совпадает:".format(
+            u"Определено автоматически: {:.0f} мм ({}).".format(guess_mm, guess_src)
+            if guess_ft > 0 else u"Определить автоматически не удалось."
+        ),
+        int(round(guess_mm)) if guess_ft > 0 else 2000
+    )
+    total_ft = to_float_mm(rv) / MM_IN_FOOT
+    dbg(u"полная высота итог: {:.0f} мм".format(total_ft * MM_IN_FOOT))
 
-    if total_body_ft <= 0:
-        raise Stop(u"Не удалось определить высоту спецификации.")
-
-    # N участков: столько, чтобы тело первых N-1 (по body_target каждый)
-    # вместило почти всю таблицу, последний добрал остаток.
-    count = max(2, int(math.ceil(total_body_ft / body_target_ft - 0.02)))
+    # N участков: столько, чтобы полная высота уместилась по border=amount
+    # у первых N-1 (столько, сколько нарисуется целых строк), последний
+    # добирает остаток.
+    count = max(2, int(math.ceil(total_ft / amount - 0.02)))
     if count >= MAX_SEGMENTS:
         raise Stop(
             u"Получается слишком много участков ({}+). Увеличьте высоту "
@@ -457,14 +375,13 @@ def main():
     if not forms.alert(
         u"Участков: {}\n"
         u"Шапка (на каждом участке): {:.0f} мм\n"
-        u"Полная высота таблицы: {:.0f} мм (источник: {})\n"
+        u"Полная высота таблицы: {:.0f} мм\n"
         u"Первые {} участка(ов) — по {:.0f} мм (насколько позволит целое "
         u"число строк), последний — остаток.\n\n"
         u"Разбить?".format(
             count,
             header_ft * MM_IN_FOOT,
-            (total_body_ft + header_ft) * MM_IN_FOOT,
-            src,
+            total_ft * MM_IN_FOOT,
             count - 1,
             amount * MM_IN_FOOT,
         ),
@@ -501,7 +418,7 @@ def main():
             doc.Regenerate()
         dbg(u"границы участков заданы: {}/{}".format(pinned, count - 1))
 
-        arrange_in_row(sched, sheet_id, origin, width_ft, count, original_id)
+        arrange_in_row(sched, sheet_id, origin, count, original_id)
 
     if count > 2 and pinned == 0:
         forms.alert(
