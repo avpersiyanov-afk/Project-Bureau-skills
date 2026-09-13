@@ -6,19 +6,37 @@ __doc__ = (
     u"выбранных элементов активного документа. Для каждого выбранного "
     u"элемента ищется помещение (Room) во всех подключённых связях, в "
     u"которое попадает точка/центр элемента, и результат в формате "
-    u"«Имя (Номер)» записывается в целевой параметр. Перед первым "
-    u"использованием заполните имена параметров кнопкой «Параметры "
-    u"помещений»."
+    u"«Имя (Номер)» записывается в целевой параметр.\n\n"
+    u"Shift+клик — настройки (параметр-приёмник и параметр помещения в связи)."
 )
 __author__ = "Pipers"
 
-from pyrevit import revit, forms
+from pyrevit import revit, forms, script, EXEC_PARAMS
 
 from pbtools import room_info_settings
 from pbtools.room_info import apply_room_info
 
 doc = revit.doc
 uidoc = revit.uidoc
+
+
+def _open_settings():
+    edited = room_info_settings.get_settings_interactive()
+    forms.alert(
+        u"Отменено, настройки не изменены." if edited is None
+        else u"Настройки сохранены."
+    )
+
+
+try:
+    config_mode = bool(EXEC_PARAMS.config_mode)
+except Exception:
+    config_mode = False
+
+if config_mode:
+    _open_settings()
+    script.exit()
+
 
 settings = room_info_settings.get_settings_silent()
 room_info_settings.require(settings, ["target_param_name", "room_number_param_name"])
