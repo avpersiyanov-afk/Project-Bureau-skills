@@ -6,15 +6,26 @@
 
 Что делает :func:`run` за один проход по активному виду:
 
-  1. **Пересоздаёт «мёртвые» марки.** Если АР удалил/пересоздал помещение
-     (даже с тем же номером), старая марка в нашем документе перестаёт
-     находить своё помещение и показывает «???». Такие марки нельзя
-     «перепривязать» через API — поэтому под каждой из них ищется
-     помещение связи по координате головы марки, старая марка удаляется,
-     на её месте создаётся новая (голова и наличие полки сохраняются).
-  2. **Меняет типоразмер** всех живых марок помещений на виде на
+  1. **Чинит марку, чья голова уехала за границы её собственного
+     помещения.** Известная грабля Revit: марка без выноски физически
+     показывает «?» до тех пор, пока её не тронуть руками (например, АР
+     подрезал контур помещения, и старая голова осталась снаружи) — сам
+     Revit это не пересчитывает. Такую марку не пересоздаём — просто
+     переставляем `TagHeadPosition` обратно в помещение (тип/полка не
+     трогаются).
+  2. **Чинит или удаляет «битые» марки.** Марка считается битой, если:
+     `TaggedRoomId` не разрешается (АР удалил/пересоздал помещение);
+     `RoomTag.IsOrphaned`; ссылка ведёт не на Room / на неразмещённый /
+     незамкнутый Room; либо (для марки без выноски) голову из п. 1 не
+     удалось вернуть в помещение. Под головой битой марки ищется
+     помещение связи: нашлось — старая марка заменяется новой (голова и
+     полка сохраняются, если новая голова тоже внутри нового помещения —
+     иначе остаётся в его центре, чтобы не поймать ту же проблему на
+     новой марке), не нашлось — марка удаляется. Марки, чья связь сейчас
+     *выгружена*, не трогаются.
+  3. **Меняет типоразмер** всех живых марок помещений на виде на
      выбранный пользователем (единый вид марок на листе).
-  3. **Добавляет недостающие марки** для тех помещений связи, что попадают
+  4. **Добавляет недостающие марки** для тех помещений связи, что попадают
      на уровень вида и в его область подрезки, но ещё не помечены.
 
 Обход грабли с подложкой: при включённой подложке Revit отказывается
@@ -31,6 +42,7 @@
 from Autodesk.Revit.DB import (
     FilteredElementCollector, BuiltInCategory, RevitLinkInstance,
     LinkElementId, ElementId, UV, LocationPoint, Element, Family,
+    View, ViewPlan, ViewType, Transform,
 )
 
 MM_IN_FOOT = 304.8
@@ -47,6 +59,7 @@ _NEAR_TOL_MM = 400.0
 _NEAR_TOL_FT = _NEAR_TOL_MM / MM_IN_FOOT
 
 _OST_ROOM_TAGS = int(BuiltInCategory.OST_RoomTags)
+_OST_ROOMS = int(BuiltInCategory.OST_Rooms)
 
 
 # ---------------------------------------------------------------------------
@@ -56,9 +69,9 @@ _OST_ROOM_TAGS = int(BuiltInCategory.OST_RoomTags)
 def get_room_tag_types(doc):
     """
     Все загруженные типоразмеры марок помещений, включая ещё не
-    вставленные. Идём через Family -> GetFamilySymbolIds (см. грабли в
-    CLAUDE.md: FilteredElementCollector(...).OfClass(FamilySymbol) может
-    пропустить невставленные типы).
+    вставленные. Идём через Family -> GetFamilySymbolIds (FilteredElement
+    Collector(...).OfClass(FamilySymbol) может пропустить невставленные
+    типы).
     """
     result = []
     for fam in FilteredElementCollector(doc).OfClass(Family):
@@ -70,6 +83,43 @@ def get_room_tag_types(doc):
             if sym is not None:
                 result.append(sym)
     return result
+
+
+_VIEW_TYPE_RU = {
+    ViewType.FloorPlan: u"План этажа",
+    ViewType.CeilingPlan: u"План потолка",
+    ViewType.EngineeringPlan: u"Инж. план",
+    ViewType.AreaPlan: u"План зоны",
+}
+
+
+def get_taggable_plan_views(doc):
+    """Все планы (ViewPlan), пригодные для простановки марок помещений —
+    без шаблонов видов. Для Shift+клика (выбор нескольких видов)."""
+    result = []
+    for view in FilteredElementCollector(doc).OfClass(View):
+        try:
+            if isinstance(view, ViewPlan) and not view.IsTemplate:
+                result.append(view)
+        except Exception:
+            pass
+    return result
+
+
+def view_label(view):
+    """«Тип плана — Имя» для показа в списке выбора видов."""
+    try:
+        name = Element.Name.GetValue(view)
+    except Exception:
+        try:
+            name = view.Name
+        except Exception:
+            name = unicode(view.Id.IntegerValue)
+    try:
+        prefix = _VIEW_TYPE_RU.get(view.ViewType)
+    except Exception:
+        prefix = None
+    return u"{} — {}".format(prefix, name) if prefix else name
 
 
 def tag_type_label(sym):
@@ -132,16 +182,24 @@ def _restore_underlay(view, saved):
 # ---------------------------------------------------------------------------
 
 def _iter_link_rooms(doc):
-    """(link_instance, total_transform, room) по всем подключённым связям."""
+    """(link_instance, total_transform, room) по всем подключённым связям.
+    Проблемная связь (не читается GetLinkDocument/GetTotalTransform/сбор
+    Room) молча пропускается — не должна ронять весь проход по остальным."""
     for link in FilteredElementCollector(doc).OfClass(RevitLinkInstance):
-        linked_doc = link.GetLinkDocument()
+        try:
+            linked_doc = link.GetLinkDocument()
+        except Exception:
+            continue
         if linked_doc is None:
             continue
-        transform = link.GetTotalTransform()
-        rooms = FilteredElementCollector(linked_doc) \
-            .OfCategory(BuiltInCategory.OST_Rooms) \
-            .WhereElementIsNotElementType() \
-            .ToElements()
+        try:
+            transform = link.GetTotalTransform()
+            rooms = FilteredElementCollector(linked_doc) \
+                .OfCategory(BuiltInCategory.OST_Rooms) \
+                .WhereElementIsNotElementType() \
+                .ToElements()
+        except Exception:
+            continue
         for room in rooms:
             yield link, transform, room
 
@@ -180,15 +238,21 @@ def _find_link_room_at(doc, host_point):
     """
     candidates = []
     for link in FilteredElementCollector(doc).OfClass(RevitLinkInstance):
-        linked_doc = link.GetLinkDocument()
+        try:
+            linked_doc = link.GetLinkDocument()
+        except Exception:
+            continue
         if linked_doc is None:
             continue
-        transform = link.GetTotalTransform()
-        local = transform.Inverse.OfPoint(host_point)
-        rooms = FilteredElementCollector(linked_doc) \
-            .OfCategory(BuiltInCategory.OST_Rooms) \
-            .WhereElementIsNotElementType() \
-            .ToElements()
+        try:
+            transform = link.GetTotalTransform()
+            local = transform.Inverse.OfPoint(host_point)
+            rooms = FilteredElementCollector(linked_doc) \
+                .OfCategory(BuiltInCategory.OST_Rooms) \
+                .WhereElementIsNotElementType() \
+                .ToElements()
+        except Exception:
+            continue
         for room in rooms:
             try:
                 if room.Area <= 0:
@@ -240,41 +304,140 @@ def _tagged_room_key(tag):
         return None
 
 
-def _resolve_tagged_room(doc, tag):
-    """Сам элемент Room, на который смотрит марка, либо None (мёртвая
-    ссылка на удалённое помещение связи)."""
+def _is_orphaned(tag):
+    try:
+        return bool(tag.IsOrphaned)
+    except Exception:
+        return False
+
+
+def _resolve_tag_room(doc, tag):
+    """
+    (kind, room, transform) — где kind:
+      "live"          — TaggedRoomId разрешается в существующий Room (сам
+                        элемент — во втором значении); transform переводит
+                        координаты этого Room в координаты хоста
+                        (Transform.Identity для помещения хоста, реальная
+                        трансформация связи для помещения в ней) — нужно,
+                        чтобы проверить, лежит ли голова марки в его
+                        границах (см. _tag_head_in_room);
+      "dead"          — связь удалена из проекта, либо помещение в связи
+                        исчезло (осиротевшая марка, показывает «?»);
+      "link_unloaded" — связь, на которую смотрит марка, сейчас выгружена;
+                        трогать нельзя — не знаем, жива ли привязка.
+    room/transform — None для "dead"/"link_unloaded".
+    """
     try:
         leid = tag.TaggedRoomId
     except Exception:
-        return None
+        return "dead", None, None
     if leid is None:
-        return None
+        return "dead", None, None
+
     try:
         link_id = leid.LinkInstanceId
     except Exception:
         link_id = None
+
     if link_id is not None and link_id != ElementId.InvalidElementId:
         link = doc.GetElement(link_id)
-        linked_doc = link.GetLinkDocument() if link is not None else None
-        if linked_doc is None:
-            return None
+        if link is None:
+            return "dead", None, None
         try:
-            return linked_doc.GetElement(leid.LinkedElementId)
+            linked_doc = link.GetLinkDocument()
         except Exception:
-            return None
+            linked_doc = None
+        if linked_doc is None:
+            return "link_unloaded", None, None
+        try:
+            room = linked_doc.GetElement(leid.LinkedElementId)
+        except Exception:
+            room = None
+        if room is None:
+            return "dead", None, None
+        try:
+            transform = link.GetTotalTransform()
+        except Exception:
+            transform = None
+        return "live", room, transform
+
     try:
-        return doc.GetElement(leid.HostElementId)
+        room = doc.GetElement(leid.HostElementId)
+    except Exception:
+        room = None
+    if room is None:
+        return "dead", None, None
+    return "live", room, Transform.Identity
+
+
+def _is_room_element(room):
+    """room действительно Room (а не элемент, случайно занявший тот же
+    ElementId после пересоздания помещений в связи)."""
+    if room is None:
+        return False
+    try:
+        cat = room.Category
+        return cat is not None and cat.Id.IntegerValue == _OST_ROOMS
+    except Exception:
+        return False
+
+
+def _room_ok(room):
+    """
+    Помещение реально размещено и замкнуто — марка по нему покажет
+    значение, а не «?» / «Не окружено» / «Избыточное». False, если это не
+    Room, он не размещён (нет Location) или у него нулевая площадь.
+    """
+    if not _is_room_element(room):
+        return False
+    try:
+        if room.Location is None:
+            return False
+    except Exception:
+        pass
+    try:
+        return room.Area > 0
+    except Exception:
+        return True
+
+
+def _tag_head(tag):
+    try:
+        return tag.TagHeadPosition
     except Exception:
         return None
 
 
-def _is_stale(doc, tag):
+def _tag_has_leader(tag):
     try:
-        if tag.IsOrphaned:
-            return True
+        return bool(tag.HasLeader)
     except Exception:
-        pass
-    return _resolve_tagged_room(doc, tag) is None
+        return False
+
+
+def _tag_head_in_room(tag, room, transform):
+    """
+    True/False — лежит ли голова марки (в координатах хоста) внутри границ
+    её собственного помещения (transform переводит координаты Room в
+    координаты хоста — см. _resolve_tag_room). None, если проверить не
+    удалось (нет головы/трансформа либо исключение) — считаем как «не
+    внутри», чтобы марку на всякий случай поправить (см. вызывающий код).
+
+    Известная грабля Revit: если голова марки оказалась за границей
+    помещения (например, АР подрезал контур), марка рисуется как «?» и не
+    пересчитывается сама — помогает только руками подвинуть/тронуть марку
+    либо, как здесь, переставить TagHeadPosition программно.
+    """
+    if transform is None:
+        return None
+    head = _tag_head(tag)
+    if head is None:
+        return None
+    try:
+        local = transform.Inverse.OfPoint(head)
+        return bool(room.IsPointInRoom(local))
+    except Exception:
+        return None
 
 
 def _recreate_stale_tag(doc, view, old_tag, tag_type_id):
@@ -321,10 +484,24 @@ def _recreate_stale_tag(doc, view, old_tag, tag_type_id):
         new_tag.HasLeader = had_leader
     except Exception:
         pass
-    try:
-        new_tag.TagHeadPosition = head
-    except Exception:
-        pass
+
+    # Старую голову возвращаем, только если она (без выноски) лежит внутри
+    # НОВОГО помещения — иначе на новой марке тут же повторится тот же
+    # баг «?»: голова вне границ, Revit не пересчитывает подпись сам.
+    # Новая марка и так создана с головой в center (гарантированно внутри
+    # помещения), так что при отказе просто оставляем как есть.
+    restore_head = had_leader
+    if not restore_head:
+        try:
+            local_head = transform.Inverse.OfPoint(head)
+            restore_head = bool(room.IsPointInRoom(local_head))
+        except Exception:
+            restore_head = False
+    if restore_head:
+        try:
+            new_tag.TagHeadPosition = head
+        except Exception:
+            pass
     return new_tag
 
 
@@ -358,17 +535,26 @@ def run(doc, view, tag_type_id):
     """
     Обновить и дорасставить марки помещений на ``view``. Транзакцию
     открывает вызывающий. Возвращает словарь-статистику с ключами:
-    added, recreated, retyped, already, orphan_unresolved, out_of_view,
-    room_no_point.
+    added, recreated, deleted, retyped, head_fixed, already, link_unloaded,
+    orphan_unresolved, out_of_view, room_no_point, errors.
+
+    Каждая марка/помещение обрабатывается в своём try/except — падение на
+    одной не должно прерывать проход по остальным (и тем более — ронять
+    исключение из run() наружу: это откатило бы всю транзакцию целиком,
+    отменив уже сделанные исправления). Такие случаи считаются в "errors".
     """
     stats = {
         "added": 0,
         "recreated": 0,
+        "deleted": 0,
         "retyped": 0,
+        "head_fixed": 0,
         "already": 0,
+        "link_unloaded": 0,
         "orphan_unresolved": 0,
         "out_of_view": 0,
         "room_no_point": 0,
+        "errors": 0,
     }
 
     saved_underlay = _suppress_underlay(view)
@@ -379,61 +565,134 @@ def run(doc, view, tag_type_id):
         except Exception:
             view_elev = None
 
-        existing_tags = list(
+        # Марки вида: и через вид-скоуп, и общим сбором с фильтром по
+        # OwnerViewId — осиротевшие «?»-марки из вид-скоупа иногда
+        # выпадают.
+        existing_tags = []
+        seen_tag_ids = set()
+        for coll in (
             FilteredElementCollector(doc, view.Id)
             .OfCategory(BuiltInCategory.OST_RoomTags)
-            .WhereElementIsNotElementType()
-        )
+            .WhereElementIsNotElementType(),
+            FilteredElementCollector(doc)
+            .OfCategory(BuiltInCategory.OST_RoomTags)
+            .WhereElementIsNotElementType(),
+        ):
+            for tag in coll:
+                try:
+                    tid = tag.Id.IntegerValue
+                    if tid in seen_tag_ids:
+                        continue
+                    if tag.OwnerViewId != view.Id:
+                        continue
+                    seen_tag_ids.add(tid)
+                    existing_tags.append(tag)
+                except Exception:
+                    stats["errors"] += 1
 
         tagged_keys = set()
 
-        # 1) Существующие марки: мёртвые — пересоздать, живые — сменить тип.
+        # 1) Существующие марки:
+        #    - связь выгружена              -> не трогаем (не знаем, жива ли
+        #      привязка), считаем отдельно;
+        #    - марка без выноски, чья голова физически вышла за границы её
+        #      же помещения -> просто переставляем голову обратно внутрь
+        #      (не пересоздаём — привязка к помещению не менялась, задвоить
+        #      марку так нельзя);
+        #    - «битая» марка — пробуем пересоздать по месту; не вышло ->
+        #      УДАЛЯЕМ (толку от неё нет). Битой считаем, если:
+        #        * kind == "dead" (ссылка не разрешается);
+        #        * tag.IsOrphaned;
+        #        * привязана не к Room / к неразмещённому / незамкнутому;
+        #        * голову вернуть внутрь не получилось (см. выше).
+        #    - нормальные                   -> только приводим типоразмер.
         for tag in existing_tags:
-            if _is_stale(doc, tag):
-                new_tag = _recreate_stale_tag(doc, view, tag, tag_type_id)
-                if new_tag is None:
-                    stats["orphan_unresolved"] += 1
+            try:
+                kind, room, transform = _resolve_tag_room(doc, tag)
+
+                if kind == "link_unloaded":
+                    stats["link_unloaded"] += 1
                     continue
-                stats["recreated"] += 1
-                key = _tagged_room_key(new_tag)
-                if key is not None:
-                    tagged_keys.add(key)
-            else:
+
+                broken = (kind == "dead") or _is_orphaned(tag) or not _room_ok(room)
+
+                if not broken and not _tag_has_leader(tag):
+                    in_room = _tag_head_in_room(tag, room, transform)
+                    if in_room is False:
+                        # Голова вне границ своего же помещения — известная
+                        # грабля Revit: марка рисуется как «?», пока её не
+                        # тронуть руками. Просто возвращаем голову внутрь,
+                        # без тяжёлого пересоздания (тип/полка не трогаются;
+                        # марка остаётся привязана к тому же помещению —
+                        # никакого риска задвоить марку на другом).
+                        center = _room_center_host(room, transform)
+                        fixed = False
+                        if center is not None:
+                            try:
+                                tag.TagHeadPosition = center
+                                fixed = True
+                            except Exception:
+                                fixed = False
+                        if fixed:
+                            stats["head_fixed"] += 1
+                        else:
+                            broken = True
+
+                if broken:
+                    new_tag = _recreate_stale_tag(doc, view, tag, tag_type_id)
+                    if new_tag is not None:
+                        stats["recreated"] += 1
+                        key = _tagged_room_key(new_tag)
+                        if key is not None:
+                            tagged_keys.add(key)
+                        continue
+                    try:
+                        doc.Delete(tag.Id)
+                        stats["deleted"] += 1
+                    except Exception:
+                        stats["orphan_unresolved"] += 1
+                    continue
+
                 if _apply_type(tag, tag_type_id):
                     stats["retyped"] += 1
                 key = _tagged_room_key(tag)
                 if key is not None:
                     tagged_keys.add(key)
+            except Exception:
+                stats["errors"] += 1
 
         # 2) Дорасставить марки для непомеченных помещений связей.
         for link, transform, room in _iter_link_rooms(doc):
-            if not _room_placed(room):
-                continue
-            key = (link.Id.IntegerValue, room.Id.IntegerValue)
-            if key in tagged_keys:
-                stats["already"] += 1
-                continue
-
-            center = _room_center_host(room, transform)
-            if center is None:
-                stats["room_no_point"] += 1
-                continue
-            if view_elev is not None and abs(center.Z - view_elev) > _LEVEL_TOL_FT:
-                continue
-            if not _point_in_view_crop(view, center):
-                stats["out_of_view"] += 1
-                continue
-
             try:
-                new_tag = doc.Create.NewRoomTag(
-                    LinkElementId(link.Id, room.Id),
-                    UV(center.X, center.Y), view.Id)
+                if not _room_placed(room):
+                    continue
+                key = (link.Id.IntegerValue, room.Id.IntegerValue)
+                if key in tagged_keys:
+                    stats["already"] += 1
+                    continue
+
+                center = _room_center_host(room, transform)
+                if center is None:
+                    stats["room_no_point"] += 1
+                    continue
+                if view_elev is not None and abs(center.Z - view_elev) > _LEVEL_TOL_FT:
+                    continue
+                if not _point_in_view_crop(view, center):
+                    stats["out_of_view"] += 1
+                    continue
+
+                try:
+                    new_tag = doc.Create.NewRoomTag(
+                        LinkElementId(link.Id, room.Id),
+                        UV(center.X, center.Y), view.Id)
+                except Exception:
+                    new_tag = None
+                if new_tag is None:
+                    continue
+                _apply_type(new_tag, tag_type_id)
+                stats["added"] += 1
             except Exception:
-                new_tag = None
-            if new_tag is None:
-                continue
-            _apply_type(new_tag, tag_type_id)
-            stats["added"] += 1
+                stats["errors"] += 1
     finally:
         _restore_underlay(view, saved_underlay)
 

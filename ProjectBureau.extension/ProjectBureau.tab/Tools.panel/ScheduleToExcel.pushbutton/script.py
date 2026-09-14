@@ -68,7 +68,7 @@ try:
     merge_line = u""
     if os.path.isfile(path):
         try:
-            existing = read_xlsx(path)
+            existing = read_xlsx(path, keep_formulas=True)
             ex_widths = read_xlsx_col_widths(path)
             rows, col_widths, st = merge_export(rows, col_widths, existing, ex_widths)
             if st["merged"]:

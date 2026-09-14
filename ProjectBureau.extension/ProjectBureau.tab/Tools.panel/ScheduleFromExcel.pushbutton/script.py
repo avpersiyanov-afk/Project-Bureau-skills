@@ -39,8 +39,11 @@ try:
         parts.append(u"Без изменений: {}".format(res["unchanged"]))
     if res["read_only"]:
         parts.append(u"Пропущено (только чтение / ссылка): {}".format(res["read_only"]))
+    if res.get("skipped_cols"):
+        parts.append(u"Столбцы не из модели (пропущены целиком): {}".format(
+            u", ".join(res["skipped_cols"])))
     if res["no_param"]:
-        parts.append(u"Параметр не найден у элемента: {}".format(res["no_param"]))
+        parts.append(u"Параметр не найден у отдельных элементов: {}".format(res["no_param"]))
     if res["no_element"]:
         parts.append(u"Элемент не найден по ID: {}".format(res["no_element"]))
     if res["errors"]:

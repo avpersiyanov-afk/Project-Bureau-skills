@@ -1,13 +1,22 @@
 # -*- coding: utf-8 -*-
 """
-Перенос имени и номера помещения из связанной модели в параметр элемента
+Перенос значений помещения из связанной модели в параметр элемента
 активного документа.
 
 Для каждого элемента ищется точка (точка вставки, середина кривой для
 line-based элементов, либо центр bounding box), затем среди ВСЕХ
 подключённых связей ищется Room, в который попадает эта точка, и в целевой
-параметр элемента записывается "Имя (Номер)" (или только то, что удалось
-найти).
+параметр элемента записывается строка, собранная по МАСКЕ.
+
+Маска (render_room_mask): имена параметров помещения (Room) связи,
+разделённые запятыми и/или скобками. Прочие символы — как есть.
+  «Имя, Номер»    -> «Офис, 212»
+  «Имя (Номер)»   -> «Офис (212)»
+  «Номер»         -> «212»
+«Имя»/«Номер» (без учёта регистра, а также Name/Number) — псевдонимы
+нативных ROOM_NAME / ROOM_NUMBER; остальные токены ищутся как параметры
+Room по имени. Токен без значения выпадает вместе с осиротевшими
+скобками/запятыми.
 
 Поиск помещения двухпроходный:
   1. точное попадание внутрь Room (Room.IsPointInRoom) — как было;
@@ -17,10 +26,11 @@ line-based элементов, либо центр bounding box), затем с�
 в стену (стены обычно ~200 мм), и точка семейства оказывается за контуром
 Room на 1-2 см, из-за чего IsPointInRoom возвращает False.
 
-Имена параметров (куда писать результат, из какого параметра связанного
-Room брать номер) — соглашения конкретного проекта, поэтому не зашиты
-здесь, а приходят из room_info_settings.py.
+Куда писать результат и сама маска — соглашения конкретного проекта,
+поэтому не зашиты здесь, а приходят из настроек (room_info_settings.py).
 """
+
+import re
 
 from Autodesk.Revit.DB import (
     RevitLinkInstance, FilteredElementCollector, BuiltInCategory,
@@ -75,15 +85,95 @@ def _collect_rooms(linked_doc):
         .ToElements()
 
 
-def _room_name_number(room, room_number_param_name):
-    """(имя, номер) одного Room — имя из нативного ROOM_NAME, номер из
-    общего параметра проекта. Любое может быть None."""
-    name_param = room.get_Parameter(BuiltInParameter.ROOM_NAME)
-    room_name = name_param.AsString() if name_param and name_param.HasValue else None
+_ROOM_NAME_ALIASES = (u"имя", u"name", u"имя помещения", u"room name")
+_ROOM_NUMBER_ALIASES = (u"номер", u"number", u"номер помещения", u"room number")
 
-    room_number = get_string_param(room, room_number_param_name) if room_number_param_name else None
+# Разделители маски: запятая и круглые скобки. По ним режем маску на
+# токены-имена параметров, сами разделители сохраняем как есть.
+_MASK_SPLIT_RE = re.compile(u"([(),])")
 
-    return room_name, room_number
+
+def _room_param_value(room, name):
+    """
+    Строковое значение параметра помещения Room по имени токена маски.
+    «Имя»/«Номер» (и англ. Name/Number) — нативные ROOM_NAME/ROOM_NUMBER,
+    остальное ищется как обычный параметр Room. Пустая строка, если не
+    нашлось/пусто.
+    """
+    key = (name or u"").strip().lower()
+
+    if key in _ROOM_NAME_ALIASES:
+        p = room.get_Parameter(BuiltInParameter.ROOM_NAME)
+        if p is not None and p.HasValue:
+            return (p.AsString() or u"").strip()
+
+    if key in _ROOM_NUMBER_ALIASES:
+        p = room.get_Parameter(BuiltInParameter.ROOM_NUMBER)
+        if p is not None and p.HasValue:
+            return (p.AsString() or u"").strip()
+
+    value = get_string_param(room, name)
+    if value and value.strip():
+        return value.strip()
+
+    try:
+        p = room.LookupParameter(name)
+        if p is not None and p.HasValue:
+            for getter in (p.AsString, p.AsValueString):
+                try:
+                    s = getter()
+                except Exception:
+                    s = None
+                if s and s.strip():
+                    return s.strip()
+    except Exception:
+        pass
+
+    return u""
+
+
+def _cleanup_mask_result(text):
+    """Убрать следы выпавших токенов: пустые скобки, сдвоенные и
+    висящие по краям запятые, лишние пробелы у скобок."""
+    text = re.sub(u"\\(\\s*\\)", u"", text)
+    text = re.sub(u"\\(\\s+", u"(", text)
+    text = re.sub(u"\\s+\\)", u")", text)
+    text = re.sub(u"\\s+,", u",", text)
+    text = re.sub(u"(,\\s*){2,}", u", ", text)
+    text = re.sub(u"[ \\t]{2,}", u" ", text)
+    return text.strip().strip(u",").strip()
+
+
+def render_room_mask(room, mask):
+    """
+    Строка по маске для одного Room. Имена параметров в маске заменяются
+    их значениями, разделители (, ( ) ) и прочий текст — как есть. Токен
+    без значения выпадает вместе с прилегающими осиротевшими скобками и
+    запятыми. Пустая маска или отсутствие значений -> "".
+    """
+    if not mask or not mask.strip():
+        return u""
+
+    out = []
+    for chunk in _MASK_SPLIT_RE.split(mask):
+        if chunk in (u"(", u")", u","):
+            out.append(chunk)
+            continue
+
+        core = chunk.strip()
+        if not core:
+            out.append(chunk)
+            continue
+
+        value = _room_param_value(room, core)
+        if not value:
+            continue
+
+        lead = chunk[:len(chunk) - len(chunk.lstrip())]
+        trail = chunk[len(chunk.rstrip()):]
+        out.append(lead + value + trail)
+
+    return _cleanup_mask_result(u"".join(out))
 
 
 def _distance_to_room_boundary(room, point):
@@ -139,7 +229,7 @@ def _find_room(doc, point):
     """
     Ищет и возвращает сам элемент Room (не имя/номер), которому
     принадлежит point, во всех RevitLinkInstance активного документа —
-    общий поиск для find_room_info и find_room_param_value. Проход 1 —
+    общий поиск для find_room_value и find_room_param_value. Проход 1 —
     точное попадание внутрь (Room.IsPointInRoom). Проход 2 (если точного
     нет) — ближайший Room, чей контур не дальше ROOM_TOLERANCE_MM от
     точки по горизонтали. None, если точка пуста или ничего не найдено.
@@ -182,27 +272,26 @@ def _find_room(doc, point):
     return best_room
 
 
-def find_room_info(doc, point, room_number_param_name):
+def find_room_value(doc, point, mask):
     """
-    Ищет Room, которому принадлежит point (см. _find_room), и возвращает
-    (имя, номер) — любое из двух может быть None, если Room не найден или
-    у него не заполнено.
+    Ищет Room под точкой (см. _find_room) и собирает по нему строку по
+    маске (render_room_mask). "" — если Room не найден или маска ничего
+    не дала. Заменяет прежнюю пару find_room_info + format_room_value.
     """
     room = _find_room(doc, point)
     if room is None:
-        return None, None
-    return _room_name_number(room, room_number_param_name)
+        return u""
+    return render_room_mask(room, mask)
 
 
 def find_room_param_value(doc, point, param_name):
     """
     Значение произвольного текстового параметра НА САМОМ элементе Room в
-    связанной модели (не имя/номер помещения — см. find_room_info, а
-    любой другой параметр, заполняемый на помещении как таковом, например
-    признак принадлежности к какой-то группе/зоне) — тем же поиском, что
-    и find_room_info (точное попадание, иначе ближайший в пределах
-    допуска). None, если параметр не задан, Room не найден, либо
-    параметра на нём нет/он пуст.
+    связанной модели (не собранное по маске значение — см. find_room_value,
+    а один конкретный параметр, например признак принадлежности к
+    какой-то группе/зоне) — тем же поиском (точное попадание, иначе
+    ближайший в пределах допуска). None, если параметр не задан, Room не
+    найден, либо параметра на нём нет/он пуст.
     """
     if not param_name:
         return None
@@ -215,22 +304,12 @@ def find_room_param_value(doc, point, param_name):
     return value.strip() if value and value.strip() else None
 
 
-def format_room_value(room_name, room_number):
-    """"Имя (Номер)" — либо то, что удалось найти по отдельности, либо пустая строка."""
-    if room_name and room_number:
-        return u"{} ({})".format(room_name, room_number)
-    if room_name:
-        return room_name
-    if room_number:
-        return u"({})".format(room_number)
-    return u""
-
-
-def apply_room_info(doc, elements, target_param_name, room_number_param_name):
+def apply_room_info(doc, elements, target_param_name, mask):
     """
-    Для каждого элемента ищет связанное помещение и пишет результат в
-    target_param_name. Возвращает список (element, status, value), где
-    status — "written"/"not_found"/"no_point"/"no_param"/"write_error".
+    Для каждого элемента ищет связанное помещение и пишет в
+    target_param_name строку, собранную по маске. Возвращает список
+    (element, status, value), где status —
+    "written"/"not_found"/"no_point"/"no_param"/"write_error".
     Транзакцию открывает вызывающий скрипт кнопки.
     """
     results = []
@@ -244,8 +323,7 @@ def apply_room_info(doc, elements, target_param_name, room_number_param_name):
             results.append((el, "no_point", u""))
             continue
 
-        room_name, room_number = find_room_info(doc, point, room_number_param_name)
-        value = format_room_value(room_name, room_number)
+        value = find_room_value(doc, point, mask)
 
         if not value:
             results.append((el, "not_found", u""))
