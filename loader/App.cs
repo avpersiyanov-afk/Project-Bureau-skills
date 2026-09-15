@@ -70,9 +70,8 @@ namespace ProjectBureau.Loader
                     };
                     if (File.Exists(btn.IconPath))
                     {
-                        var img = LoadIcon(btn.IconPath);
-                        data.LargeImage = img;
-                        data.Image = img;
+                        data.LargeImage = LoadIcon(btn.IconPath, 32);
+                        data.Image = LoadIcon(btn.IconPath, 16);
                     }
                     if (panel.AddItem(data) is PushButton pb)
                     {
@@ -234,11 +233,19 @@ namespace ProjectBureau.Loader
             }
         }
 
-        private static BitmapImage LoadIcon(string path)
+        /// <summary>
+        /// Revit не масштабирует Image/LargeImage сам — ждёт готовую картинку
+        /// нужного размера (16/32px), иначе показывает необрезанный кусок
+        /// (например, угол) исходного файла. Икон-файлы в репозитории —
+        /// 96x96, поэтому декодируем сразу в целевой размер.
+        /// </summary>
+        private static BitmapImage LoadIcon(string path, int pixelSize)
         {
             var bmp = new BitmapImage();
             bmp.BeginInit();
             bmp.UriSource = new Uri(path, UriKind.Absolute);
+            bmp.DecodePixelWidth = pixelSize;
+            bmp.DecodePixelHeight = pixelSize;
             bmp.CacheOption = BitmapCacheOption.OnLoad;
             bmp.EndInit();
             bmp.Freeze();
