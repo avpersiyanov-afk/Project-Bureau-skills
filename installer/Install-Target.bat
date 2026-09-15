@@ -47,7 +47,7 @@ if "%FOUND%"=="0" (
 )
 
 echo.
-echo Done. Start Revit - the "Bureau" ribbon tab should appear.
+echo Done. Start Revit - the "Project Bureau Skills" ribbon tab should appear.
 echo Future updates are automatic (downloaded from GitHub on each Revit startup) - no need to run this again unless the loader itself (loader\ folder) changes.
 
 :end

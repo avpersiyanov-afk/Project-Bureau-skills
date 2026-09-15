@@ -1,4 +1,4 @@
-; Установщик панели "Бюро" для Revit без pyRevit.
+; Установщик панели "Project Bureau Skills" для Revit без pyRevit.
 ; Собирается через Inno Setup (ISCC.exe ProjectBureau.iss) — на выходе
 ; один файл ProjectBureauSetup.exe, который раздаётся на рабочие машины.
 ; Payload (loader\bin\Release, ProjectBureau.extension со встроенным
@@ -24,7 +24,7 @@ Compression=lzma2
 SolidCompression=yes
 PrivilegesRequired=lowest
 ArchitecturesInstallIn64BitMode=x64compatible
-UninstallDisplayName={#MyAppName} — панель "Бюро" для Revit
+UninstallDisplayName={#MyAppName} — панель "Project Bureau Skills" для Revit
 
 [Languages]
 Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
@@ -96,7 +96,7 @@ begin
         Msg := Msg + ', ';
       Msg := Msg + DetectedYears[I];
     end;
-    MsgBox(Msg + '. Панель «Бюро» появится при следующем запуске Revit.',
+    MsgBox(Msg + '. Панель «Project Bureau Skills» появится при следующем запуске Revit.',
       mbInformation, MB_OK);
   end;
 end;

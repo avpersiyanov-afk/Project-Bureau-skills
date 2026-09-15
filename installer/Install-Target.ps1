@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-    Устанавливает панель "Бюро" на рабочем компьютере — без git, без .NET
+    Устанавливает панель "Project Bureau Skills" на рабочем компьютере — без git, без .NET
     SDK, без интернета (кроме последующего самообновления внутри Revit).
 
     Запускать из распакованного ProjectBureau-install.zip (этот скрипт
@@ -56,5 +56,5 @@ Set-Content -Path $AddinPath -Value $AddinXml -Encoding UTF8
 Write-Host "Манифест установлен: $AddinPath"
 
 Write-Host ""
-Write-Host "Готово. Запустите Revit $RevitVersion — появится лента «Бюро»."
+Write-Host "Готово. Запустите Revit $RevitVersion — появится лента «Project Bureau Skills»."
 Write-Host "Дальше обновления кнопок/скриптов панель скачивает сама с GitHub при каждом запуске Revit — ничего вручную обновлять не нужно."

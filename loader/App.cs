@@ -10,7 +10,7 @@ using Autodesk.Revit.UI;
 namespace ProjectBureau.Loader
 {
     /// <summary>
-    /// Самостоятельный (без pyRevit) загрузчик панели «Бюро»: на старте Revit
+    /// Самостоятельный (без pyRevit) загрузчик панели «Project Bureau Skills»: на старте Revit
     /// сканирует ProjectBureau.tab\*.panel\*.pushbutton\{script.py,bundle.yaml},
     /// компилирует по одной тонкой IExternalCommand-обёртке на кнопку (см.
     /// BundleScanner) и строит ленту. Сами script.py не меняются и не
@@ -45,9 +45,9 @@ namespace ProjectBureau.Loader
 
                 string generatedDll = BundleScanner.CompileCommands(buttons);
 
-                application.CreateRibbonTab("Бюро");
+                application.CreateRibbonTab("Project Bureau Skills");
 
-                RibbonPanel servicePanel = application.CreateRibbonPanel("Бюро", "Обновление");
+                RibbonPanel servicePanel = application.CreateRibbonPanel("Project Bureau Skills", "Обновление");
                 var updateData = new PushButtonData(
                     "Cmd_UpdateFromGitHub", "Обновить\nс GitHub",
                     typeof(App).Assembly.Location, "ProjectBureau.Loader.UpdateCommand")
@@ -58,7 +58,7 @@ namespace ProjectBureau.Loader
                 };
                 servicePanel.AddItem(updateData);
 
-                RibbonPanel panel = application.CreateRibbonPanel("Бюро", "Инструменты");
+                RibbonPanel panel = application.CreateRibbonPanel("Project Bureau Skills", "Инструменты");
 
                 foreach (var btn in buttons)
                 {
@@ -83,7 +83,7 @@ namespace ProjectBureau.Loader
             }
             catch (Exception ex)
             {
-                TaskDialog.Show("ProjectBureau", "Не удалось загрузить панель «Бюро»:\n\n" + ex);
+                TaskDialog.Show("ProjectBureau", "Не удалось загрузить панель «Project Bureau Skills»:\n\n" + ex);
                 return Result.Failed;
             }
         }

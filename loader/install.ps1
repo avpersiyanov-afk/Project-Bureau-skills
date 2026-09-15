@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-    Разовая установка панели "Бюро" в Revit без pyRevit.
+    Разовая установка панели "Project Bureau Skills" в Revit без pyRevit.
 
     1) Скачивает embeddable CPython (если ещё не скачан) в
        ProjectBureau.extension\runtime\python.
@@ -59,5 +59,5 @@ Copy-Item (Join-Path $PSScriptRoot "ProjectBureau.addin") -Destination $AddinsDi
 Write-Host "Манифест установлен: $AddinsDir\ProjectBureau.addin"
 
 Write-Host ""
-Write-Host "Готово. Запустите Revit $RevitVersion — должна появиться лента «Бюро»."
+Write-Host "Готово. Запустите Revit $RevitVersion — должна появиться лента «Project Bureau Skills»."
 Write-Host "Дальше правки кнопок/скриптов — обычный git pull в $RepoRoot, без повторного запуска этого скрипта."
