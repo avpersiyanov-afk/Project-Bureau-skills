@@ -63,4 +63,21 @@ Remove-Item $StageDir -Recurse -Force
 
 Write-Host ""
 Write-Host "Готово: $ZipPath"
-Write-Host "На каждой из рабочих машин: распаковать zip и запустить Install-Target.ps1 (git и .NET SDK не нужны)."
+
+# --- 4. Setup.exe через Inno Setup (если он установлен) ---------------------
+$Iscc = Get-ChildItem -Path @(
+    "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
+    "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+    "C:\Program Files\Inno Setup 6\ISCC.exe"
+) -ErrorAction SilentlyContinue | Select-Object -First 1
+
+if ($Iscc) {
+    Write-Host "Собираю ProjectBureauSetup.exe..."
+    & $Iscc.FullName (Join-Path $PSScriptRoot "ProjectBureau.iss") "/O$OutputDir" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "ISCC завершился с ошибкой" }
+    Write-Host "Готово: $(Join-Path $OutputDir 'ProjectBureauSetup.exe')"
+    Write-Host "На каждой из рабочих машин: просто запустить ProjectBureauSetup.exe (git и .NET SDK не нужны)."
+} else {
+    Write-Host "Inno Setup не найден — .zip + Install-Target.ps1 всё равно работают."
+    Write-Host "Чтобы получить один ProjectBureauSetup.exe: winget install JRSoftware.InnoSetup, затем запустить этот скрипт ещё раз."
+}
