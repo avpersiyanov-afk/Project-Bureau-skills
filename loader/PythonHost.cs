@@ -15,7 +15,7 @@ namespace ProjectBureau.Loader
     /// первым встаёт в sys.path и подменяет собой настоящий pyrevit —
     /// поэтому сами script.py не меняются.
     /// </summary>
-    internal static class PythonHost
+    public static class PythonHost
     {
         private static bool _initialized;
         private static readonly object InitLock = new object();
