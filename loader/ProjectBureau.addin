@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<RevitAddIns>
+  <AddIn Type="Application">
+    <Name>ProjectBureau</Name>
+    <Assembly>C:\project\Project-Bureau-skills\loader\bin\Release\ProjectBureau.Loader.dll</Assembly>
+    <AddInId>8f2b6f2a-2e9f-4d2a-9f3b-6c7a1e0d5b21</AddInId>
+    <FullClassName>ProjectBureau.Loader.App</FullClassName>
+    <VendorId>PBUREAU</VendorId>
+  </AddIn>
+</RevitAddIns>

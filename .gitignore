@@ -18,3 +18,8 @@ addins/*/obj/
 /csharp/**/obj/
 /csharp/**/*.zip
 /csharp/*.zip
+
+# Загрузчик ProjectBureau (без pyRevit) — сборка и встроенный Python не в git
+/loader/bin/
+/loader/obj/
+/ProjectBureau.extension/runtime/
