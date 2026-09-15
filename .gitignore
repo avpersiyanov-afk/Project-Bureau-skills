@@ -23,3 +23,4 @@ addins/*/obj/
 /loader/bin/
 /loader/obj/
 /ProjectBureau.extension/runtime/
+/dist/

@@ -1,6 +1,8 @@
 using System;
-using System.Diagnostics;
+using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
+using System.Linq;
 using System.Reflection;
 using System.Windows.Media.Imaging;
 using Autodesk.Revit.UI;
@@ -30,7 +32,7 @@ namespace ProjectBureau.Loader
                     return Result.Failed;
                 }
 
-                TryGitPull(ExtensionRoot);
+                TryUpdateFromGitHub(ExtensionRoot);
 
                 var buttons = BundleScanner.DiscoverButtons(ExtensionRoot);
                 if (buttons.Count == 0)
@@ -76,9 +78,22 @@ namespace ProjectBureau.Loader
             return Result.Succeeded;
         }
 
+        /// <summary>
+        /// Порядок поиска ProjectBureau.extension — без единой настройки
+        /// должен работать и на машине разработчика, и на установленной
+        /// через installer\Install-Target.ps1 копии на рабочих компьютерах:
+        /// 1) явный override-файл рядом с DLL (на случай нестандартной
+        ///    раскладки);
+        /// 2) "соседняя" раскладка &lt;root&gt;\loader\ProjectBureau.Loader.dll
+        ///    + &lt;root&gt;\ProjectBureau.extension — именно так раскладывает
+        ///    установщик на рабочих компьютерах;
+        /// 3) путь репозитория на машине разработчика (dotnet build кладёт
+        ///    DLL в loader\bin\Release, поэтому вариант 2 для неё не подходит).
+        /// </summary>
         private static string ResolveExtensionRoot()
         {
             string asmDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+
             string overrideFile = Path.Combine(asmDir, "ProjectBureau.root.txt");
             if (File.Exists(overrideFile))
             {
@@ -86,34 +101,109 @@ namespace ProjectBureau.Loader
                 if (Directory.Exists(p))
                     return p;
             }
+
+            string sibling = Path.GetFullPath(Path.Combine(asmDir, "..", "ProjectBureau.extension"));
+            if (Directory.Exists(sibling))
+                return sibling;
+
             return @"C:\project\Project-Bureau-skills\ProjectBureau.extension";
         }
 
-        private static void TryGitPull(string extensionRoot)
+        private const string RepoZipUrl =
+            "https://codeload.github.com/avpersiyanov-afk/Project-Bureau-skills/zip/refs/heads/main";
+
+        /// <summary>
+        /// На рабочих компьютерах git не установлен, поэтому обновление —
+        /// не "git pull", а скачивание zip-архива ветки main прямо с GitHub
+        /// (codeload, без токена — репозиторий публичный) и подмена папки
+        /// ProjectBureau.extension содержимым архива (кроме runtime\ —
+        /// встроенного Python, которого в git нет). Любая ошибка (нет сети,
+        /// GitHub недоступен) тихо игнорируется — Revit должен запуститься
+        /// в любом случае с тем, что уже есть на диске.
+        /// </summary>
+        private static void TryUpdateFromGitHub(string extensionRoot)
         {
+            string tempZip = null;
+            string tempExtractDir = null;
             try
             {
-                string repoRoot = Directory.GetParent(extensionRoot).FullName;
-                if (!Directory.Exists(Path.Combine(repoRoot, ".git")))
-                    return;
+                System.Net.ServicePointManager.SecurityProtocol |= System.Net.SecurityProtocolType.Tls12;
 
-                var psi = new ProcessStartInfo("git", "pull --ff-only")
+                tempZip = Path.Combine(Path.GetTempPath(), "ProjectBureau_update_" + Guid.NewGuid().ToString("N") + ".zip");
+                tempExtractDir = Path.Combine(Path.GetTempPath(), "ProjectBureau_update_" + Guid.NewGuid().ToString("N"));
+
+                using (var client = new System.Net.Http.HttpClient())
                 {
-                    WorkingDirectory = repoRoot,
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    CreateNoWindow = true,
-                };
-                using (var p = Process.Start(psi))
+                    client.Timeout = TimeSpan.FromSeconds(15);
+                    client.DefaultRequestHeaders.UserAgent.ParseAdd("ProjectBureau.Loader");
+                    byte[] bytes = client.GetByteArrayAsync(RepoZipUrl).ConfigureAwait(false).GetAwaiter().GetResult();
+                    File.WriteAllBytes(tempZip, bytes);
+                }
+
+                Directory.CreateDirectory(tempExtractDir);
+                ZipFile.ExtractToDirectory(tempZip, tempExtractDir);
+
+                string extractedRepoRoot = Directory.GetDirectories(tempExtractDir).FirstOrDefault();
+                string newExtension = extractedRepoRoot != null
+                    ? Path.Combine(extractedRepoRoot, "ProjectBureau.extension")
+                    : null;
+
+                if (newExtension != null && Directory.Exists(newExtension))
                 {
-                    p.WaitForExit(15000);
+                    MirrorDirectory(newExtension, extensionRoot, skipTopLevelDirs: new[] { "runtime" });
                 }
             }
             catch
             {
-                // Нет git в PATH, нет сети, конфликт слияния и т.п. — не
-                // должно мешать запуску Revit, просто грузим то, что на диске.
+                // Нет сети, GitHub недоступен, антивирус и т.п. — работаем
+                // с тем, что уже лежит на диске.
+            }
+            finally
+            {
+                try { if (tempZip != null && File.Exists(tempZip)) File.Delete(tempZip); } catch { }
+                try { if (tempExtractDir != null && Directory.Exists(tempExtractDir)) Directory.Delete(tempExtractDir, true); } catch { }
+            }
+        }
+
+        /// <summary>
+        /// Зеркалирует source в dest: копирует новое/изменённое, удаляет то,
+        /// чего больше нет в source. skipTopLevelDirs — папки прямо внутри
+        /// dest, которые не трогаем (runtime\python — не из git, ставится
+        /// установщиком один раз).
+        /// </summary>
+        private static void MirrorDirectory(string source, string dest, string[] skipTopLevelDirs)
+        {
+            Directory.CreateDirectory(dest);
+
+            var sourceDirNames = new HashSet<string>(
+                Directory.GetDirectories(source).Select(Path.GetFileName), StringComparer.OrdinalIgnoreCase);
+            var sourceFileNames = new HashSet<string>(
+                Directory.GetFiles(source).Select(Path.GetFileName), StringComparer.OrdinalIgnoreCase);
+
+            foreach (var d in Directory.GetDirectories(dest))
+            {
+                string name = Path.GetFileName(d);
+                if (skipTopLevelDirs.Contains(name, StringComparer.OrdinalIgnoreCase))
+                    continue;
+                if (!sourceDirNames.Contains(name))
+                    Directory.Delete(d, true);
+            }
+            foreach (var f in Directory.GetFiles(dest))
+            {
+                if (!sourceFileNames.Contains(Path.GetFileName(f)))
+                    File.Delete(f);
+            }
+
+            foreach (var sd in Directory.GetDirectories(source))
+            {
+                string name = Path.GetFileName(sd);
+                if (skipTopLevelDirs.Contains(name, StringComparer.OrdinalIgnoreCase))
+                    continue;
+                MirrorDirectory(sd, Path.Combine(dest, name), Array.Empty<string>());
+            }
+            foreach (var sf in Directory.GetFiles(source))
+            {
+                File.Copy(sf, Path.Combine(dest, Path.GetFileName(sf)), true);
             }
         }
 
