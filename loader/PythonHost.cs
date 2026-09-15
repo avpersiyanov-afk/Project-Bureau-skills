@@ -99,11 +99,12 @@ namespace ProjectBureau.Loader
                 }
                 catch (PythonException pex)
                 {
-                    if (IsScriptExit(pex))
+                    string formatted = pex.Format(); // настоящий Python-трейсбек
+                    if (IsScriptExit(formatted))
                         return Result.Succeeded;
 
-                    message = pex.Message;
-                    TaskDialog.Show("ProjectBureau — ошибка", pex.ToString());
+                    message = formatted;
+                    TaskDialog.Show("ProjectBureau — ошибка", formatted);
                     return Result.Failed;
                 }
             }
@@ -124,9 +125,9 @@ namespace ProjectBureau.Loader
             path.insert(0, dir);
         }
 
-        private static bool IsScriptExit(PythonException pex)
+        private static bool IsScriptExit(string formattedTraceback)
         {
-            return pex.Message.IndexOf("ScriptExitException", StringComparison.Ordinal) >= 0;
+            return formattedTraceback.IndexOf("ScriptExitException", StringComparison.Ordinal) >= 0;
         }
 
         public static void Shutdown()
