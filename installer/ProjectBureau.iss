@@ -13,7 +13,7 @@
 AppId={{8F2B6F2A-2E9F-4D2A-9F3B-6C7A1E0D5B21}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
-DefaultDirName=C:\ProjectBureau
+DefaultDirName={localappdata}\ProjectBureau
 DefaultGroupName=ProjectBureau
 DisableProgramGroupPage=yes
 DisableWelcomePage=no
@@ -22,7 +22,7 @@ OutputDir=..\dist
 OutputBaseFilename=ProjectBureauSetup
 Compression=lzma2
 SolidCompression=yes
-PrivilegesRequired=admin
+PrivilegesRequired=lowest
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayName={#MyAppName} — панель "Бюро" для Revit
 
