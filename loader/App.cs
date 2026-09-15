@@ -19,6 +19,8 @@ namespace ProjectBureau.Loader
     public class App : IExternalApplication
     {
         internal static string ExtensionRoot;
+        internal static readonly Dictionary<string, PushButton> ButtonsByClassName =
+            new Dictionary<string, PushButton>();
 
         public Result OnStartup(UIControlledApplication application)
         {
@@ -44,6 +46,18 @@ namespace ProjectBureau.Loader
                 string generatedDll = BundleScanner.CompileCommands(buttons);
 
                 application.CreateRibbonTab("Бюро");
+
+                RibbonPanel servicePanel = application.CreateRibbonPanel("Бюро", "Обновление");
+                var updateData = new PushButtonData(
+                    "Cmd_UpdateFromGitHub", "Обновить\nс GitHub",
+                    typeof(App).Assembly.Location, "ProjectBureau.Loader.UpdateCommand")
+                {
+                    ToolTip = "Скачивает актуальные script.py с GitHub и сразу применяет их — " +
+                               "без перезапуска Revit. Новые кнопки (если появились) покажутся " +
+                               "только после перезапуска Revit.",
+                };
+                servicePanel.AddItem(updateData);
+
                 RibbonPanel panel = application.CreateRibbonPanel("Бюро", "Инструменты");
 
                 foreach (var btn in buttons)
@@ -60,7 +74,10 @@ namespace ProjectBureau.Loader
                         data.LargeImage = img;
                         data.Image = img;
                     }
-                    panel.AddItem(data);
+                    if (panel.AddItem(data) is PushButton pb)
+                    {
+                        ButtonsByClassName[btn.ClassName] = pb;
+                    }
                 }
 
                 return Result.Succeeded;
@@ -121,7 +138,14 @@ namespace ProjectBureau.Loader
         /// GitHub недоступен) тихо игнорируется — Revit должен запуститься
         /// в любом случае с тем, что уже есть на диске.
         /// </summary>
-        private static void TryUpdateFromGitHub(string extensionRoot)
+        /// <returns>
+        /// true, если скрипты реально подменены свежей копией с GitHub;
+        /// false при любой проблеме (нет сети, GitHub недоступен и т.п.) —
+        /// тогда работаем с тем, что уже лежит на диске. Вызывающий код сам
+        /// решает, показывать ли это пользователю (на старте Revit —
+        /// молча, из кнопки «Обновить» — явно).
+        /// </returns>
+        internal static bool TryUpdateFromGitHub(string extensionRoot)
         {
             string tempZip = null;
             string tempExtractDir = null;
@@ -151,12 +175,15 @@ namespace ProjectBureau.Loader
                 if (newExtension != null && Directory.Exists(newExtension))
                 {
                     MirrorDirectory(newExtension, extensionRoot, skipTopLevelDirs: new[] { "runtime" });
+                    return true;
                 }
+                return false;
             }
             catch
             {
                 // Нет сети, GitHub недоступен, антивирус и т.п. — работаем
                 // с тем, что уже лежит на диске.
+                return false;
             }
             finally
             {
