@@ -53,6 +53,7 @@ robocopy $ExtensionRoot (Join-Path $StageDir "ProjectBureau.extension") /MIR /NF
 if ($LASTEXITCODE -ge 8) { throw "robocopy: ошибка копирования ProjectBureau.extension (код $LASTEXITCODE)" }
 $global:LASTEXITCODE = 0
 Copy-Item (Join-Path $PSScriptRoot "Install-Target.ps1") -Destination $StageDir
+Copy-Item (Join-Path $PSScriptRoot "Install-Target.bat") -Destination $StageDir
 
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 $ZipPath = Join-Path $OutputDir "ProjectBureau-install.zip"
