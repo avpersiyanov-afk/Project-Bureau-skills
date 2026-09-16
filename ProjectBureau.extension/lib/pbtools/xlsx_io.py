@@ -69,7 +69,7 @@ def _col_letter(idx):
     n = idx + 1
     while n:
         n, r = divmod(n - 1, 26)
-        s = unichr(65 + r) + s
+        s = chr(65 + r) + s
     return s
 
 
