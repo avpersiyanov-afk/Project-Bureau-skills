@@ -90,7 +90,16 @@ namespace ProjectBureau.Loader
 
         public Result OnShutdown(UIControlledApplication application)
         {
-            PythonHost.Shutdown();
+            try
+            {
+                PythonHost.Shutdown();
+            }
+            catch
+            {
+                // Revit и так закрывает сессию — не мешаем этому диалогом
+                // "Сбой внешнего инструмента" из-за проблем с завершением
+                // встроенного Python.
+            }
             return Result.Succeeded;
         }
 

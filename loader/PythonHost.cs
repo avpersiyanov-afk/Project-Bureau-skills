@@ -170,9 +170,26 @@ namespace ProjectBureau.Loader
 
         public static void Shutdown()
         {
-            if (_initialized)
+            if (!_initialized)
+                return;
+
+            try
             {
+                // PythonEngine.Shutdown() печально известен нестабильностью
+                // в pythonnet, особенно после BeginAllowThreads() (GIL
+                // отпущен, а сохранённый thread state для аккуратного
+                // возврата мы не храним) — падает с TaskDialog "Сбой
+                // внешнего инструмента" при закрытии Revit. Сам процесс
+                // Revit в этот момент и так завершает сессию/закрывается,
+                // так что чистое явное завершение интерпретатора не
+                // критично — ОС всё равно освободит ресурсы.
                 PythonEngine.Shutdown();
+            }
+            catch
+            {
+            }
+            finally
+            {
                 _initialized = false;
             }
         }
