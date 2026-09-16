@@ -65,7 +65,7 @@ from Autodesk.Revit.DB.ExtensibleStorage import (
     Schema, SchemaBuilder, AccessLevel, Entity
 )
 
-from System import Guid, String
+from System import Guid, String, Object
 from System.Collections.Generic import List
 
 from pyrevit import forms
@@ -1169,7 +1169,7 @@ def show_status_form(rows, catalog_root, entries):
     for mr in rows:
         counts[mr.status] = counts.get(mr.status, 0) + 1
 
-    data = List[object]()
+    data = List[Object]()
     for mr in rows:
         row = _StatusRow(mr)
         row.Selected = bool(mr.entry) and mr.status in (STATUS_STALE, STATUS_NO_STAMP)
@@ -1546,7 +1546,7 @@ def show_load_form(entries, present_names, catalog_root):
     и флаг замены значений параметров, — либо None, если окно закрыли.
     Выбор типоразмеров делается всегда, отдельным окном (show_type_picker).
     """
-    data = List[object]()
+    data = List[Object]()
     n_new = 0
     for e in entries:
         in_model = e.name in present_names
@@ -1725,7 +1725,7 @@ def show_type_picker(type_map):
     if not type_map:
         return {}
 
-    data = List[object]()
+    data = List[Object]()
     for entry, names in type_map:
         fam_name = os.path.splitext(os.path.basename(entry.path))[0]
         for tn in names:
