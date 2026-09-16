@@ -754,6 +754,11 @@ class OverwriteFamilyLoadOptions(IFamilyLoadOptions):
     Для общих (shared) вложенных семейств источник — сам загружаемый файл.
     """
 
+    # __namespace__ обязателен под pythonnet (в отличие от IronPython) —
+    # без него конструктор класса, реализующего .NET-интерфейс напрямую,
+    # падает с "TypeError: interface takes exactly one argument".
+    __namespace__ = "ProjectBureau.Interop"
+
     # ВАЖНО: у класса, реализующего .NET-интерфейс, под IronPython НЕ должно
     # быть собственного __init__ — иначе Revit не распознаёт реализацию и не
     # вызывает OnFamilyFound (проверено: «колбэки НЕ вызывались»). Режим

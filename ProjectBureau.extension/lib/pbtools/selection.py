@@ -94,6 +94,11 @@ def is_pickable_model_element(elem):
 class ModelElementSelectionFilter(ISelectionFilter):
     """ISelectionFilter поверх is_pickable_model_element."""
 
+    # __namespace__ обязателен под pythonnet (в отличие от IronPython) —
+    # без него конструктор класса, реализующего .NET-интерфейс напрямую,
+    # падает с "TypeError: interface takes exactly one argument".
+    __namespace__ = "ProjectBureau.Interop"
+
     def AllowElement(self, elem):
         return is_pickable_model_element(elem)
 
