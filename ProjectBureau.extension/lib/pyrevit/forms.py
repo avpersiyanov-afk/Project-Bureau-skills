@@ -29,8 +29,15 @@ APP_TITLE = u"ProjectBureau"
 
 
 def alert(msg, title=None, ok=True, yes=False, no=False, exitscript=False,
-          **_ignored):
+          options=None, **_ignored):
     title = title or APP_TITLE
+
+    if options:
+        picked = _show_options_alert(msg, title, options)
+        if exitscript and picked is None:
+            raise ScriptExitException()
+        return picked
+
     if yes or no:
         buttons = MessageBoxButtons.YesNo
     else:
@@ -40,6 +47,46 @@ def alert(msg, title=None, ok=True, yes=False, no=False, exitscript=False,
     if exitscript:
         raise ScriptExitException()
     return ret
+
+
+def _show_options_alert(msg, title, options):
+    """forms.alert(msg, options=[...]) — окно с текстом и одной кнопкой на
+    каждый вариант. Возвращает текст нажатой кнопки или None, если окно
+    закрыли без выбора."""
+    form = Form()
+    form.Text = title
+    form.FormBorderStyle = FormBorderStyle.FixedDialog
+    form.StartPosition = FormStartPosition.CenterScreen
+    form.MinimizeBox = False
+    form.MaximizeBox = False
+
+    label = Label()
+    label.Text = msg
+    label.Location = Point(12, 12)
+    label.Size = Size(360, 60)
+    form.Controls.Add(label)
+
+    picked = {"value": None}
+
+    def make_handler(value):
+        def handler(sender, args):
+            picked["value"] = value
+            form.Close()
+        return handler
+
+    y = 84
+    for opt in options:
+        btn = Button()
+        btn.Text = opt
+        btn.Location = Point(12, y)
+        btn.Size = Size(360, 28)
+        btn.Click += make_handler(opt)
+        form.Controls.Add(btn)
+        y += 36
+
+    form.ClientSize = Size(384, y + 12)
+    form.ShowDialog()
+    return picked["value"]
 
 
 def ask_for_string(default=u"", prompt=u"", title=None):
