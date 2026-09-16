@@ -198,6 +198,14 @@ class SelectFromList(object):
 
         checked_state = {}  # id(option) -> bool, только для multiselect
 
+        # ListBox.Items хранит только .NET-строки, никогда сами options —
+        # добавление в коллекцию "сырого" питоновского объекта валит окно
+        # (InvalidCastException в Python.Runtime.PyObject.DoConvert) в
+        # момент создания хэндла контрола (ListBox.OnHandleCreated ->
+        # NativeAdd), т.е. при form.ShowDialog(). Оригинальные объекты
+        # держим отдельно и сопоставляем по индексу.
+        current = []  # options, показанные сейчас — current[i] <-> Items[i]
+
         def visible_items(query):
             q = (query or u"").strip().lower()
             if not q:
@@ -205,13 +213,15 @@ class SelectFromList(object):
             return [o for o in options if q in str(o).lower()]
 
         def refresh(query=u""):
+            del current[:]
             listbox.Items.Clear()
             for o in visible_items(query):
+                current.append(o)
                 if multiselect:
-                    idx = listbox.Items.Add(o)
+                    idx = listbox.Items.Add(str(o))
                     listbox.SetItemChecked(idx, checked_state.get(id(o), False))
                 else:
-                    listbox.Items.Add(o)
+                    listbox.Items.Add(str(o))
 
         def on_search_changed(sender, args):
             refresh(search.Text)
@@ -221,7 +231,7 @@ class SelectFromList(object):
         if multiselect:
             def on_item_check(sender, args):
                 from System.Windows.Forms import CheckState
-                item = listbox.Items[args.Index]
+                item = current[args.Index]
                 checked_state[id(item)] = (args.NewValue == CheckState.Checked)
             listbox.ItemCheck += on_item_check
 
@@ -253,9 +263,10 @@ class SelectFromList(object):
             chosen = [o for o in options if checked_state.get(id(o), False)]
             return chosen
         else:
-            if listbox.SelectedItem is None:
+            idx = listbox.SelectedIndex
+            if idx < 0:
                 return None
-            return listbox.SelectedItem
+            return current[idx]
 
 
 class ProgressBar(object):
