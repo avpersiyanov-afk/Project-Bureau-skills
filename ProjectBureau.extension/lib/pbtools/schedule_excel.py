@@ -19,6 +19,7 @@ from Autodesk.Revit.DB import (
     Element,
     ElementId,
     FilteredElementCollector,
+    RevitLinkInstance,
     ScheduleFieldType,
     ScheduleSortOrder,
     SectionType,
@@ -231,7 +232,16 @@ def _is_calc_field(f):
 
 def _calc_cell_texts(sched, els, names, calc_flags):
     u"""
-    {element_id: {индекс столбца: текст}} для расчётных столбцов.
+    {индекс элемента в els: {индекс столбца: текст}} для расчётных столбцов, а также
+    (все столбцы) для строк, где элемент — сам RevitLinkInstance: элемент
+    внутри связанного файла коллектору недоступен (FilteredElementCollector
+    может вернуть только элемент своего Document — см. CopyElementId.pushbutton
+    про ref.ElementId/ref.LinkedElementId), поэтому LookupParameter на нём не
+    находит параметров спецификации; берём значение из отрисованной таблицы.
+    Ключ результата — индекс в els, а не el.Id: у нескольких таких строк
+    один и тот же RevitLinkInstance, то есть один и тот же Id, — ключевать
+    по нему нельзя.
+
     Строки тела спеки сопоставляем с элементами по совпадению НЕрасчётных
     столбцов (значение параметра <-> GetCellText); строки-заголовки групп
     и т.п. просто не находят пары и пропускаются.
@@ -259,13 +269,14 @@ def _calc_cell_texts(sched, els, names, calc_flags):
         ).lower()
 
     def calc_vals(i):
-        return dict((j, cell(i, j)) for j in calc)
+        # все столбцы, не только calc: нужно и для строк-элементов связи
+        return dict((j, cell(i, j)) for j in range(ncols))
 
     sig_els = {}
-    for el in els:
+    for idx, el in enumerate(els):
         pmap = _instance_param_map(el)
         sig = tuple(norm(_param_to_text(pmap.get(names[j]))) for j in plain)
-        sig_els.setdefault(sig, []).append(el)
+        sig_els.setdefault(sig, []).append(idx)
 
     out = {}
     cursor = {}
@@ -278,15 +289,13 @@ def _calc_cell_texts(sched, els, names, calc_flags):
         if k >= len(bucket):
             continue
         cursor[sig] = k + 1
-        out[bucket[k].Id.IntegerValue] = calc_vals(i)
+        out[bucket[k]] = calc_vals(i)
 
     # запасной путь: сопоставить по значениям не вышло, но строк тела
     # РОВНО столько же, сколько элементов (значит группировка не добавляет
     # строк-заголовков) — берём построчно, в порядке _ordered_elements
     if len(out) < len(els) and nrows == len(els):
-        out = {}
-        for i, el in enumerate(els):
-            out[el.Id.IntegerValue] = calc_vals(i)
+        out = dict((idx, calc_vals(idx)) for idx in range(len(els)))
 
     return out
 
@@ -309,17 +318,22 @@ def schedule_to_rows(doc, sched):
             widths.append(0.0)
 
     els = _ordered_elements(doc, sched)
+    link_rows = [isinstance(el, RevitLinkInstance) for el in els]
 
-    calc_map = _calc_cell_texts(sched, els, names, calc_flags) if any(calc_flags) else {}
+    calc_map = (
+        _calc_cell_texts(sched, els, names, calc_flags)
+        if any(calc_flags) or any(link_rows)
+        else {}
+    )
 
     rows = [[ID_HEADER] + names]
-    for el in els:
+    for idx, (el, is_link) in enumerate(zip(els, link_rows)):
         pmap = _instance_param_map(el)
         eid = el.Id.IntegerValue
-        cm = calc_map.get(eid, {})
+        cm = calc_map.get(idx, {})
         row = [eid]
         for j, nm in enumerate(names):
-            if calc_flags[j]:
+            if calc_flags[j] or is_link:
                 row.append(cm.get(j, u""))
             else:
                 row.append(_param_to_text(pmap.get(nm)))
