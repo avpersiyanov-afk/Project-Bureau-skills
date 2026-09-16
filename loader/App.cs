@@ -159,7 +159,16 @@ namespace ProjectBureau.Loader
                 {
                     client.Timeout = TimeSpan.FromSeconds(15);
                     client.DefaultRequestHeaders.UserAgent.ParseAdd("ProjectBureau.Loader");
-                    byte[] bytes = client.GetByteArrayAsync(RepoZipUrl).ConfigureAwait(false).GetAwaiter().GetResult();
+                    // codeload.github.com стоит за CDN и может недолго отдавать
+                    // закэшированный архив сразу после пуша — без этого
+                    // "успешное" обновление иногда тихо подсовывает старую
+                    // версию. no-cache + метка времени в URL заставляют брать
+                    // актуальный main каждый раз.
+                    client.DefaultRequestHeaders.CacheControl =
+                        new System.Net.Http.Headers.CacheControlHeaderValue { NoCache = true, NoStore = true };
+                    client.DefaultRequestHeaders.Pragma.Add(new System.Net.Http.Headers.NameValueHeaderValue("no-cache"));
+                    string url = RepoZipUrl + "?nocache=" + DateTime.UtcNow.Ticks;
+                    byte[] bytes = client.GetByteArrayAsync(url).ConfigureAwait(false).GetAwaiter().GetResult();
                     File.WriteAllBytes(tempZip, bytes);
                 }
 
