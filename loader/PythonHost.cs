@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -128,6 +129,43 @@ namespace ProjectBureau.Loader
         private static bool IsScriptExit(string formattedTraceback)
         {
             return formattedTraceback.IndexOf("ScriptExitException", StringComparison.Ordinal) >= 0;
+        }
+
+        /// <summary>
+        /// Вызывается после успешного "Обновить с GitHub". script.py
+        /// читается с диска на каждый клик (см. RunScript), но всё, что
+        /// он импортирует (pbtools.*, pyrevit.*), Python держит в
+        /// sys.modules и переиспользует до конца процесса Revit —
+        /// подмена файлов на диске сама по себе на уже импортированные
+        /// модули не действует. Без явного сброса кэша "успешное"
+        /// обновление тихо продолжает работать со старым кодом до
+        /// перезапуска Revit.
+        /// </summary>
+        public static void InvalidateModuleCache()
+        {
+            if (!_initialized)
+                return; // Python ещё не стартовал в этой сессии — кэшировать нечего.
+
+            using (Py.GIL())
+            {
+                dynamic sys = Py.Import("sys");
+                dynamic modules = sys.modules;
+
+                var stale = new List<string>();
+                foreach (var key in modules)
+                {
+                    string name = key.ToString();
+                    if (name == "pyrevit" || name.StartsWith("pyrevit.") ||
+                        name == "pbtools" || name.StartsWith("pbtools."))
+                    {
+                        stale.Add(name);
+                    }
+                }
+                foreach (var name in stale)
+                {
+                    modules.pop(name, null);
+                }
+            }
         }
 
         public static void Shutdown()

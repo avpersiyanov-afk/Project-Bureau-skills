@@ -32,6 +32,12 @@ namespace ProjectBureau.Loader
                 return Result.Succeeded;
             }
 
+            // Файлы на диске подменены, но уже импортированные pbtools.*/
+            // pyrevit.* остаются в sys.modules до конца процесса Revit —
+            // без явного сброса кнопки продолжали бы работать со старым
+            // кодом до перезапуска Revit, несмотря на "успешное" обновление.
+            PythonHost.InvalidateModuleCache();
+
             var current = BundleScanner.DiscoverButtons(App.ExtensionRoot);
 
             foreach (var btn in current)
