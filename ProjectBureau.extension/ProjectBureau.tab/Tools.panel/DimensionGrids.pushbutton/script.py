@@ -8,7 +8,10 @@ import clr
 clr.AddReference('RevitAPI')
 clr.AddReference('RevitAPIUI')
 
-from Autodesk.Revit.DB import *
+from Autodesk.Revit.DB import (
+    BuiltInParameter, DimensionStyleType, DimensionType, FilteredElementCollector,
+    Grid, Line, Reference, ReferenceArray, XYZ,
+)
 from pyrevit import revit, forms
 
 
