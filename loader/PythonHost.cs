@@ -74,6 +74,20 @@ namespace ProjectBureau.Loader
             UIApplication uiApp = commandData.Application;
             UIDocument uiDoc = uiApp.ActiveUIDocument;
             Document doc = uiDoc?.Document;
+
+            if (uiDoc == null || doc == null)
+            {
+                // Кнопки создаются один раз при старте Revit и не отключаются,
+                // когда нет открытого документа (стартовый экран, все окна
+                // закрыты) — pyRevit в этом случае просто не даёт нажать
+                // кнопку (context: active-doc), а тут её пришлось бы либо
+                // отключать динамически через IExternalCommandAvailability,
+                // либо, как здесь, ловить до запуска script.py. Без этой
+                // проверки script.py падал с сырым Python-трейсбеком
+                // (AttributeError на doc.* / uidoc.*) вместо понятного текста.
+                TaskDialog.Show("ProjectBureau", "Сначала откройте документ Revit.");
+                return Result.Cancelled;
+            }
             bool shiftHeld = Keyboard.Modifiers == ModifierKeys.Shift;
 
             using (Py.GIL())
