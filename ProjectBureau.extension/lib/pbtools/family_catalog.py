@@ -77,12 +77,12 @@ from System.Windows import (
 from System.Windows.Controls import (
     StackPanel, TextBlock, Button, CheckBox, Orientation, DockPanel, Dock,
     ScrollViewer, ScrollBarVisibility,
-    DataGrid, DataGridCheckBoxColumn, DataGridTextColumn,
+    DataGrid, DataGridCell, DataGridRow, DataGridCheckBoxColumn, DataGridTextColumn,
     DataGridLength, DataGridLengthUnitType,
     DataGridHeadersVisibility, DataGridGridLinesVisibility, DataGridSelectionMode
 )
 from System.Windows.Data import Binding, BindingMode, UpdateSourceTrigger
-from System.Windows.Media import Brushes
+from System.Windows.Media import Brushes, VisualTreeHelper
 from System.ComponentModel import ListSortDirection
 
 
@@ -1066,6 +1066,35 @@ def _check_col(header, path="Selected"):
     return c
 
 
+def _enable_single_click_checkbox(grid):
+    """DataGridCheckBoxColumn по умолчанию требует два клика по галочке:
+    первый клик только выделяет ячейку/строку, второй входит в режим
+    редактирования и переключает значение — обычная особенность WPF
+    DataGrid, не связанная с pythonnet (проверяется и в чистом C#).
+    Пользователю это выглядит как «семейства не отмечаются». Форсируем
+    BeginEdit() уже по первому клику, чтобы галочка срабатывала сразу."""
+
+    def on_preview_down(sender, e):
+        dep = e.OriginalSource
+        while dep is not None and not isinstance(dep, DataGridCell):
+            dep = VisualTreeHelper.GetParent(dep)
+        if dep is None or dep.IsEditing:
+            return
+
+        if not dep.IsFocused:
+            dep.Focus()
+
+        row = dep
+        while row is not None and not isinstance(row, DataGridRow):
+            row = VisualTreeHelper.GetParent(row)
+        if row is not None:
+            row.IsSelected = True
+
+        grid.BeginEdit()
+
+    grid.PreviewMouseLeftButtonDown += on_preview_down
+
+
 def _attach_row_coloring(grid, brush_fn):
     """Красит текст строки DataGrid кистью brush_fn(item); переживает
     прокрутку/пересортировку (LoadingRow вызывается повторно)."""
@@ -1244,6 +1273,7 @@ def show_status_form(rows, catalog_root, entries):
 
     _attach_row_coloring(grid, lambda it: _status_brush(it.Status))
     _attach_datagrid_sorting(grid, data)
+    _enable_single_click_checkbox(grid)
 
     def _choose_file(row):
         if row is None:
@@ -1616,6 +1646,7 @@ def show_load_form(entries, present_names, catalog_root):
 
     _attach_row_coloring(grid, lambda it: Brushes.Gray if it.InModel else Brushes.Green)
     _attach_datagrid_sorting(grid, data)
+    _enable_single_click_checkbox(grid)
 
     bottom = StackPanel()
     bottom.Margin = Thickness(16, 8, 16, 12)
@@ -1786,6 +1817,7 @@ def show_type_picker(type_map):
     grid.Columns.Add(_text_col(u"Типоразмер", "TypeName", _star(3)))
 
     _attach_datagrid_sorting(grid, data)
+    _enable_single_click_checkbox(grid)
 
     bottom = StackPanel()
     bottom.Margin = Thickness(16, 8, 16, 12)
