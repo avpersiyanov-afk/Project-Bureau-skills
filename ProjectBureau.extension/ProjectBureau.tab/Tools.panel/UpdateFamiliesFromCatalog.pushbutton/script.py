@@ -71,10 +71,6 @@ try:
     ]
     forms.alert(u"\n".join(summary), title=u"Семейства из каталога")
 
-except script.ScriptExitException:
-    # Штатный выход (script.exit() / forms.alert(exitscript=True)) —
-    # не ошибка, пробрасываем наверх, PythonHost завершит молча.
-    raise
 except Exception:
     forms.alert(
         u"Сбой при обновлении семейств:\n\n{}".format(traceback.format_exc()),

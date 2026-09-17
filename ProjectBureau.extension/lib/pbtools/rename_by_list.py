@@ -24,7 +24,6 @@ clr.AddReference('PresentationFramework')
 clr.AddReference('PresentationCore')
 clr.AddReference('WindowsBase')
 
-from System import Object
 from System.Collections.Generic import List
 
 from pyrevit import forms
@@ -179,7 +178,7 @@ def _show_rename_dialog(stems, folder_a, folder_b):
     """Таблица «текущее имя / новое имя» (второй столбец редактируемый).
     Возвращает dict {старое: новое} только для изменённых строк, либо None
     при отмене."""
-    data = List[Object]()
+    data = List[object]()
     for stem in stems:
         data.Add(_NameRow(stem))
 

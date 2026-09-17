@@ -104,10 +104,6 @@ try:
     ]
     forms.alert(u"\n".join(summary), title=u"Загрузить семейства")
 
-except script.ScriptExitException:
-    # Штатный выход (script.exit() / forms.alert(exitscript=True)) —
-    # не ошибка, пробрасываем наверх, PythonHost завершит молча.
-    raise
 except Exception:
     forms.alert(
         u"Сбой при загрузке семейств:\n\n{}".format(traceback.format_exc()),

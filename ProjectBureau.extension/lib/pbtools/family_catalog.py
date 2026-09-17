@@ -65,10 +65,9 @@ from Autodesk.Revit.DB.ExtensibleStorage import (
     Schema, SchemaBuilder, AccessLevel, Entity
 )
 
-from System import Guid, String, Object
+from System import Guid, String
 from System.Collections.Generic import List
 
-import pyrevit
 from pyrevit import forms
 
 from System.Windows import (
@@ -736,7 +735,7 @@ def build_matches(families, entries):
 # Перезагрузка семейства с заменой параметров
 # --------------------------------------------------------------------------
 
-def _build_overwrite_family_load_options():
+class OverwriteFamilyLoadOptions(IFamilyLoadOptions):
     """
     IFamilyLoadOptions для перезагрузки семейства.
 
@@ -753,56 +752,36 @@ def _build_overwrite_family_load_options():
     которых в файле нет, Revit из проекта не удаляет.
 
     Для общих (shared) вложенных семейств источник — сам загружаемый файл.
-
-    Класс завёрнут в builder + pyrevit.interop_singleton (не определён на
-    уровне модуля напрямую) — иначе повторный импорт этого модуля после
-    «Обновить с GitHub» падает на попытке второй раз зарегистрировать тот
-    же CLR-тип (см. __namespace__ ниже).
     """
 
-    class OverwriteFamilyLoadOptions(IFamilyLoadOptions):
+    # ВАЖНО: у класса, реализующего .NET-интерфейс, под IronPython НЕ должно
+    # быть собственного __init__ — иначе Revit не распознаёт реализацию и не
+    # вызывает OnFamilyFound (проверено: «колбэки НЕ вызывались»). Режим
+    # перезаписи держим в модульном _OVERWRITE_PARAM_VALUES, экземпляр
+    # создаём через make_load_options().
 
-        # __namespace__ обязателен под pythonnet (в отличие от IronPython) —
-        # без него конструктор класса, реализующего .NET-интерфейс напрямую,
-        # падает с "TypeError: interface takes exactly one argument".
-        __namespace__ = "ProjectBureau.Interop"
+    trace = []  # трейс вызовов колбэков (диагностика)
 
-        # ВАЖНО: у класса, реализующего .NET-интерфейс, под IronPython НЕ
-        # должно быть собственного __init__ — иначе Revit не распознаёт
-        # реализацию и не вызывает OnFamilyFound (проверено: «колбэки НЕ
-        # вызывались»). Режим перезаписи держим в модульном
-        # _OVERWRITE_PARAM_VALUES, экземпляр создаём через
-        # make_load_options().
-
-        trace = []  # трейс вызовов колбэков (диагностика)
-
-        def OnFamilyFound(self, familyInUse, overwriteParameterValues):
-            try:
-                overwriteParameterValues.Value = _OVERWRITE_PARAM_VALUES[0]
-                OverwriteFamilyLoadOptions.trace.append(
-                    u"OnFamilyFound(inUse={}) -> overwrite={}".format(
-                        familyInUse, _OVERWRITE_PARAM_VALUES[0]
-                    )
+    def OnFamilyFound(self, familyInUse, overwriteParameterValues):
+        try:
+            overwriteParameterValues.Value = _OVERWRITE_PARAM_VALUES[0]
+            OverwriteFamilyLoadOptions.trace.append(
+                u"OnFamilyFound(inUse={}) -> overwrite={}".format(
+                    familyInUse, _OVERWRITE_PARAM_VALUES[0]
                 )
-            except Exception as ex:
-                OverwriteFamilyLoadOptions.trace.append(u"OnFamilyFound ИСКЛ: {}".format(ex))
-            return True
+            )
+        except Exception as ex:
+            OverwriteFamilyLoadOptions.trace.append(u"OnFamilyFound ИСКЛ: {}".format(ex))
+        return True
 
-        def OnSharedFamilyFound(self, sharedFamily, familyInUse, source, overwriteParameterValues):
-            try:
-                source.Value = FamilySource.Family
-                overwriteParameterValues.Value = _OVERWRITE_PARAM_VALUES[0]
-                OverwriteFamilyLoadOptions.trace.append(u"OnSharedFamilyFound")
-            except Exception as ex:
-                OverwriteFamilyLoadOptions.trace.append(u"OnSharedFamilyFound ИСКЛ: {}".format(ex))
-            return True
-
-    return OverwriteFamilyLoadOptions
-
-
-OverwriteFamilyLoadOptions = pyrevit.interop_singleton(
-    "OverwriteFamilyLoadOptions", _build_overwrite_family_load_options
-)
+    def OnSharedFamilyFound(self, sharedFamily, familyInUse, source, overwriteParameterValues):
+        try:
+            source.Value = FamilySource.Family
+            overwriteParameterValues.Value = _OVERWRITE_PARAM_VALUES[0]
+            OverwriteFamilyLoadOptions.trace.append(u"OnSharedFamilyFound")
+        except Exception as ex:
+            OverwriteFamilyLoadOptions.trace.append(u"OnSharedFamilyFound ИСКЛ: {}".format(ex))
+        return True
 
 
 _OVERWRITE_PARAM_VALUES = [True]
@@ -1219,7 +1198,7 @@ def show_status_form(rows, catalog_root, entries):
     for mr in rows:
         counts[mr.status] = counts.get(mr.status, 0) + 1
 
-    data = List[Object]()
+    data = List[object]()
     for mr in rows:
         row = _StatusRow(mr)
         row.Selected = bool(mr.entry) and mr.status in (STATUS_STALE, STATUS_NO_STAMP)
@@ -1597,7 +1576,7 @@ def show_load_form(entries, present_names, catalog_root):
     и флаг замены значений параметров, — либо None, если окно закрыли.
     Выбор типоразмеров делается всегда, отдельным окном (show_type_picker).
     """
-    data = List[Object]()
+    data = List[object]()
     n_new = 0
     for e in entries:
         in_model = e.name in present_names
@@ -1777,7 +1756,7 @@ def show_type_picker(type_map):
     if not type_map:
         return {}
 
-    data = List[Object]()
+    data = List[object]()
     for entry, names in type_map:
         fam_name = os.path.splitext(os.path.basename(entry.path))[0]
         for tn in names:

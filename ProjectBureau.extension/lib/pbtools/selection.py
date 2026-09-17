@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """Общие хелперы работы с выделением элементов в Revit UI."""
 
-import pyrevit
 from pyrevit import forms
 
 from Autodesk.Revit.DB import (
@@ -92,33 +91,14 @@ def is_pickable_model_element(elem):
     return True
 
 
-def _build_model_element_selection_filter():
-    """ISelectionFilter поверх is_pickable_model_element.
+class ModelElementSelectionFilter(ISelectionFilter):
+    """ISelectionFilter поверх is_pickable_model_element."""
 
-    Завёрнут в builder + pyrevit.interop_singleton — см. комментарий в
-    family_catalog._build_overwrite_family_load_options: класс, реализующий
-    .NET-интерфейс напрямую, нельзя определять на уровне модуля второй раз
-    в том же процессе (падает после «Обновить с GitHub»)."""
+    def AllowElement(self, elem):
+        return is_pickable_model_element(elem)
 
-    class ModelElementSelectionFilter(ISelectionFilter):
-
-        # __namespace__ обязателен под pythonnet (в отличие от IronPython) —
-        # без него конструктор класса, реализующего .NET-интерфейс напрямую,
-        # падает с "TypeError: interface takes exactly one argument".
-        __namespace__ = "ProjectBureau.Interop"
-
-        def AllowElement(self, elem):
-            return is_pickable_model_element(elem)
-
-        def AllowReference(self, reference, position):
-            return True
-
-    return ModelElementSelectionFilter
-
-
-ModelElementSelectionFilter = pyrevit.interop_singleton(
-    "ModelElementSelectionFilter", _build_model_element_selection_filter
-)
+    def AllowReference(self, reference, position):
+        return True
 
 
 def collect_model_elements(doc, view):
