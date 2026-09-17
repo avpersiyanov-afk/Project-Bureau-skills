@@ -68,6 +68,7 @@ from Autodesk.Revit.DB.ExtensibleStorage import (
 from System import Guid, String, Object
 from System.Collections.Generic import List
 
+import pyrevit
 from pyrevit import forms
 
 from System.Windows import (
@@ -735,7 +736,7 @@ def build_matches(families, entries):
 # Перезагрузка семейства с заменой параметров
 # --------------------------------------------------------------------------
 
-class OverwriteFamilyLoadOptions(IFamilyLoadOptions):
+def _build_overwrite_family_load_options():
     """
     IFamilyLoadOptions для перезагрузки семейства.
 
@@ -752,41 +753,56 @@ class OverwriteFamilyLoadOptions(IFamilyLoadOptions):
     которых в файле нет, Revit из проекта не удаляет.
 
     Для общих (shared) вложенных семейств источник — сам загружаемый файл.
+
+    Класс завёрнут в builder + pyrevit.interop_singleton (не определён на
+    уровне модуля напрямую) — иначе повторный импорт этого модуля после
+    «Обновить с GitHub» падает на попытке второй раз зарегистрировать тот
+    же CLR-тип (см. __namespace__ ниже).
     """
 
-    # __namespace__ обязателен под pythonnet (в отличие от IronPython) —
-    # без него конструктор класса, реализующего .NET-интерфейс напрямую,
-    # падает с "TypeError: interface takes exactly one argument".
-    __namespace__ = "ProjectBureau.Interop"
+    class OverwriteFamilyLoadOptions(IFamilyLoadOptions):
 
-    # ВАЖНО: у класса, реализующего .NET-интерфейс, под IronPython НЕ должно
-    # быть собственного __init__ — иначе Revit не распознаёт реализацию и не
-    # вызывает OnFamilyFound (проверено: «колбэки НЕ вызывались»). Режим
-    # перезаписи держим в модульном _OVERWRITE_PARAM_VALUES, экземпляр
-    # создаём через make_load_options().
+        # __namespace__ обязателен под pythonnet (в отличие от IronPython) —
+        # без него конструктор класса, реализующего .NET-интерфейс напрямую,
+        # падает с "TypeError: interface takes exactly one argument".
+        __namespace__ = "ProjectBureau.Interop"
 
-    trace = []  # трейс вызовов колбэков (диагностика)
+        # ВАЖНО: у класса, реализующего .NET-интерфейс, под IronPython НЕ
+        # должно быть собственного __init__ — иначе Revit не распознаёт
+        # реализацию и не вызывает OnFamilyFound (проверено: «колбэки НЕ
+        # вызывались»). Режим перезаписи держим в модульном
+        # _OVERWRITE_PARAM_VALUES, экземпляр создаём через
+        # make_load_options().
 
-    def OnFamilyFound(self, familyInUse, overwriteParameterValues):
-        try:
-            overwriteParameterValues.Value = _OVERWRITE_PARAM_VALUES[0]
-            OverwriteFamilyLoadOptions.trace.append(
-                u"OnFamilyFound(inUse={}) -> overwrite={}".format(
-                    familyInUse, _OVERWRITE_PARAM_VALUES[0]
+        trace = []  # трейс вызовов колбэков (диагностика)
+
+        def OnFamilyFound(self, familyInUse, overwriteParameterValues):
+            try:
+                overwriteParameterValues.Value = _OVERWRITE_PARAM_VALUES[0]
+                OverwriteFamilyLoadOptions.trace.append(
+                    u"OnFamilyFound(inUse={}) -> overwrite={}".format(
+                        familyInUse, _OVERWRITE_PARAM_VALUES[0]
+                    )
                 )
-            )
-        except Exception as ex:
-            OverwriteFamilyLoadOptions.trace.append(u"OnFamilyFound ИСКЛ: {}".format(ex))
-        return True
+            except Exception as ex:
+                OverwriteFamilyLoadOptions.trace.append(u"OnFamilyFound ИСКЛ: {}".format(ex))
+            return True
 
-    def OnSharedFamilyFound(self, sharedFamily, familyInUse, source, overwriteParameterValues):
-        try:
-            source.Value = FamilySource.Family
-            overwriteParameterValues.Value = _OVERWRITE_PARAM_VALUES[0]
-            OverwriteFamilyLoadOptions.trace.append(u"OnSharedFamilyFound")
-        except Exception as ex:
-            OverwriteFamilyLoadOptions.trace.append(u"OnSharedFamilyFound ИСКЛ: {}".format(ex))
-        return True
+        def OnSharedFamilyFound(self, sharedFamily, familyInUse, source, overwriteParameterValues):
+            try:
+                source.Value = FamilySource.Family
+                overwriteParameterValues.Value = _OVERWRITE_PARAM_VALUES[0]
+                OverwriteFamilyLoadOptions.trace.append(u"OnSharedFamilyFound")
+            except Exception as ex:
+                OverwriteFamilyLoadOptions.trace.append(u"OnSharedFamilyFound ИСКЛ: {}".format(ex))
+            return True
+
+    return OverwriteFamilyLoadOptions
+
+
+OverwriteFamilyLoadOptions = pyrevit.interop_singleton(
+    "OverwriteFamilyLoadOptions", _build_overwrite_family_load_options
+)
 
 
 _OVERWRITE_PARAM_VALUES = [True]
